@@ -1,0 +1,69 @@
+{
+  "partitions_version": "v1.0",
+  "locked_at": "2026-09-11T00:00:00Z",
+  "lock_rationale": "Partition boundaries are derived once, committed, and never modified. The backtest engine hard-rejects any query outside DISCOVERY; the gate hard-rejects any VALIDATION query during the discovery phase. LOCKED_TEST is inaccessible to the loop entirely and is read once, manually, for the final out-of-sample demo pass.",
+
+  "derivation": {
+    "method": "60/20/20 split by REAL TRADING DAY COUNT, not calendar time",
+    "why_not_calendar": "Bitget rTokens do not trade on weekends or US market holidays. Measured coverage is ~1100-1300 of 1440 minutes on normal US weekdays but collapses to 2-8% on weekends (e.g. Sat 2026-09-05: 38 candles; Sun 2026-09-06: 117). A calendar-time split would hand one partition almost no usable data and could place a boundary inside a weekend.",
+    "trading_day_definition": "A UTC day with >= 500 valid 1-minute candles on the reference symbol.",
+    "window_bound_by": "Intersection of candle history and funding-rate history. Candles for RCOINUSDT begin ~2026-06-01; paginated funding history begins 2026-06-13. The later bound wins.",
+    "reference_symbol": "RCOINUSDT",
+    "trading_days_total": 61,
+    "trading_days_excluded": 22,
+    "excluded_note": "Weekends and US market holidays (incl. Juneteenth Jun 19, Independence Day observed Jul 3, Labor Day Sep 7)."
+  },
+
+  "DISCOVERY": {
+    "start": "2026-06-15T00:00:00Z",
+    "end": "2026-08-05T23:59:59Z",
+    "trading_days": 36,
+    "share": 0.60,
+    "access": "The LLM's backtest engine runs here ONLY. Hard-rejected outside this window."
+  },
+
+  "VALIDATION": {
+    "start": "2026-08-06T00:00:00Z",
+    "end": "2026-08-21T23:59:59Z",
+    "trading_days": 12,
+    "share": 0.20,
+    "access": "The deterministic gate's final evaluation. Never touched during hypothesis generation."
+  },
+
+  "LOCKED_TEST": {
+    "start": "2026-08-24T00:00:00Z",
+    "end": "2026-09-10T23:59:59Z",
+    "trading_days": 13,
+    "share": 0.20,
+    "access": "Inaccessible to the loop entirely. Read once, manually, for the final demo out-of-sample pass."
+  },
+
+  "data_limits": {
+    "candles_endpoint": "/api/v2/spot/market/candles",
+    "granularity": "1min",
+    "max_candles_per_request": 1000,
+    "pagination_note": "MEASURED 2026-09-11, and it is the opposite of the original assumption: the endpoint paginates BACKWARD from endTime and IGNORES startTime. Walking 'forward' from startTime returns the most recent <=1000 candles every time, so a 52-day request silently yields 16 hours of data with no error. The client therefore sends endTime only and walks the cursor backward in <=1000-minute chunks. See docs/DATA_FINDINGS.md section 7.",
+    "candles_endpoint_note": "/api/v2/spot/market/candles returns EMPTY (code 00000, data []) for BTCUSDT and ETHUSDT before 2026-08-11. /api/v2/spot/market/history-candles serves the deep history (max limit 200). The prefetcher tries the first and falls back to the second. See docs/DATA_FINDINGS.md section 8.",
+    "funding_history_earliest": "2026-06-13T00:00:00Z",
+    "funding_interval_hours": 8
+  },
+
+  "session_boundaries": {
+    "daily_halt_utc_approx": "23:00-00:00",
+    "note": "rTokens halt roughly one hour per day. A forward window crossing this halt is treated as a hard session boundary and the observation is invalidated, regardless of gap length. Gaps of <=5 minutes within a session are forward-filled; gaps >5 minutes invalidate the observation."
+  },
+
+  "symbols": {
+    "reference": ["BTCUSDT", "ETHUSDT"],
+    "targets": [
+      "RCOINUSDT",
+      "RNVDAUSDT",
+      "RGOOGLUSDT",
+      "RAAPLUSDT",
+      "RAMZNUSDT",
+      "RSPYUSDT",
+      "RQQQUSDT"
+    ],
+    "note": "All 7 targets verified present on Bitget spot on 2026-09-11, among 1200 R*USDT tokenized-equity symbols. ETHUSDT was added to `reference` on 2026-09-11, before any session was recorded: the hypothesis schema licenses `eth_funding_rate` and `eth_spot_return`, so omitting ETH's candles would have left two of five signals silently unbuildable. The addition is disclosed here rather than made quietly. No partition BOUNDARY changed, and no session had been logged against the previous version — the shipped v1.0 is the first and only version any result is comparable to."
+  }
+}

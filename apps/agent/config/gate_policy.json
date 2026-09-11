@@ -1,0 +1,81 @@
+{
+  "policy_version": "v1.0",
+  "locked_at": "2026-09-11T00:00:00Z",
+  "lock_rationale": "These thresholds are written ONCE at session start and are read-only for the entire loop. The LLM is shown them so it knows what bar it is proposing against, but it cannot change them. Changing any value after a session has begun invalidates the session.",
+
+  "fdr_level": 0.10,
+  "min_ic": 0.04,
+  "min_t_stat": 2.0,
+  "min_obs": 100,
+  "require_baseline_beat": true,
+
+  "sampling": "non_overlapping",
+  "sampling_rationale": "Observations are sampled at intervals of at least the forward-window length (one 4h obs per 4h block), so no two observations share return data. Testing every minute would produce ~606 overlapping 4h-forward observations per weekday that share 239/240 of their data, inflating t-statistics by roughly sqrt(240) ~ 15x and promoting noise. Non-overlapping sampling costs observation count but keeps every observation independent and keeps the significance claim honest. This is preregistered and must be disclosed.",
+
+  "power_analysis": {
+    "note": "Pre-registered BEFORE any hypothesis was tested. Measured on the real DISCOVERY partition (2026-06-15..2026-08-05, 42,098 raw 1-minute candles across 38 weekday fetches of RCOINUSDT) with the gap policy and non-overlapping sampling applied. This block records why the forward-window cap is 120 minutes.",
+    "measured": [
+      { "window_minutes": 15,  "valid_obs": 3126, "ic_required_for_t_2": 0.0358 },
+      { "window_minutes": 30,  "valid_obs": 1547, "ic_required_for_t_2": 0.0508 },
+      { "window_minutes": 60,  "valid_obs":  742, "ic_required_for_t_2": 0.0733 },
+      { "window_minutes": 120, "valid_obs":  346, "ic_required_for_t_2": 0.1072 },
+      { "window_minutes": 240, "valid_obs":  161, "ic_required_for_t_2": 0.1567 },
+      { "window_minutes": 480, "valid_obs":   70, "ic_required_for_t_2": null }
+    ],
+    "max_forward_window_minutes": 120,
+    "cap_rationale": "At 480 minutes only 70 valid observations exist, below min_obs=100, so an 8-hour hypothesis would auto-KILL for insufficient data rather than on the merits of the idea. Capping at 120 minutes keeps every reachable hypothesis testable. The 15-30 minute range carries the statistical power; windows beyond 2 hours require an IC above 0.1, which real markets essentially never produce.",
+    "ic_floor_note": "min_ic = 0.04 only binds once n >= ~2500, which occurs only at the 15-minute window. At every longer window the t-statistic floor is the binding constraint. The IC floor is retained as a sanity check, not as the operative bar."
+  },
+
+
+  "multiple_testing_scope": "family_wide",
+  "multiple_testing_note": "The Benjamini-Hochberg correction counts EVERY hypothesis attempted this session, including all kills, retries, schema rejections, and near-duplicates. The count must never be limited to hypotheses that passed.",
+
+  "families_enabled": [
+    "funding_to_rtoken",
+    "btc_momentum_to_rtoken",
+    "combined_cross_asset"
+  ],
+  "families_removed": {
+    "oi_shock_to_rtoken": "REMOVED. Bitget exposes only a current open-interest snapshot; every historical OI endpoint returns 404 (40404 Request URL NOT FOUND). A signal defined as OI change over a lookback cannot be backtested. See docs/DATA_FINDINGS.md section 1."
+  },
+
+  "kill_reasons": [
+    "p_value_exceeds_bh_threshold",
+    "insufficient_obs",
+    "lookback_bias_detected",
+    "duplicate_family",
+    "schema_validation_failed",
+    "baseline_not_beaten",
+    "ic_below_floor",
+    "t_stat_below_floor"
+  ],
+
+  "kill_reason_precedence": [
+    "insufficient_obs",
+    "ic_below_floor",
+    "t_stat_below_floor",
+    "baseline_not_beaten",
+    "p_value_exceeds_bh_threshold"
+  ],
+  "kill_reason_precedence_note": "When more than one check fails, the reported reason is the FIRST failing check in this order. The order is preregistered so verdicts are reproducible: it runs from 'the test was not meaningful' (too few observations to compute anything) outward to 'the test was meaningful and the result did not clear the bar'. Checks are all still evaluated and recorded in the entry's `checks` block, so a reader can see every check that failed, not only the one named as the reason.",
+
+  "circuit_breaker": {
+    "max_hypotheses_per_day": 200,
+    "max_promotes_per_day": 10,
+    "max_paper_orders_per_day": 20,
+    "duplicate_signal_target_window": 5,
+    "duplicate_signal_target_threshold": 4,
+    "max_log_entries_in_context": 20,
+    "max_backtest_duration_ms": 30000,
+    "max_consecutive_llm_failures": 3
+  },
+
+  "execution_guard": {
+    "max_open_positions": 3,
+    "max_order_usdt": 100,
+    "price_sanity_band_pct": 2.0,
+    "require_paper_trading_flag": true,
+    "require_confirm": true
+  }
+}

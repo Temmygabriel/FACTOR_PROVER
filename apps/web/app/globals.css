@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Two animations exist in this product, and no more.
+ *
+ *  - .stamp-in: the verdict stamp arriving. It runs once per verdict, 180ms,
+ *    scale 0.85 -> 1.0, ease-out, no bounce. Design spec §5: "Motion is a single
+ *    event per screen."
+ *  - .loop-pulse: the amber dot beside "Loop active" while a backtest is
+ *    running. 2s, opacity only. The only ambient animation; it stops when the
+ *    verdict is issued because the element is no longer rendered.
+ *
+ * Both are disabled under prefers-reduced-motion. The stamp still appears, it
+ * simply appears at full size — no information is carried by the animation, so
+ * nothing is lost.
+ */
+@keyframes stamp-in {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes loop-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@layer base {
+  /*
+   * Light ground only, declared twice on purpose: on `:root` so every element
+   * inherits it, and on `html` so a browser in dark mode does not invert the
+   * operator's name field into a dark control on a paper page. This is a
+   * deliberate commitment rather than an unfinished dark theme — the palette is
+   * the spec's, and it has one mode.
+   */
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-paper text-ink font-sans text-label antialiased;
+  }
+
+  /* Links are underlined rather than coloured: colour in this product means a
+     verdict or the sign of a number, and a third meaning would dilute both. */
+  a {
+    @apply underline decoration-rule underline-offset-2 hover:decoration-ink;
+  }
+
+  /* Numbers column-align, so every mono element uses tabular figures. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .stamp-in {
+    animation: stamp-in 180ms ease-out both;
+  }
+
+  .loop-pulse {
+    animation: loop-pulse 2s ease-in-out infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .stamp-in,
+    .loop-pulse {
+      animation: none;
+    }
+  }
+}

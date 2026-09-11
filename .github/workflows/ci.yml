@@ -1,0 +1,214 @@
+name: CI
+
+# All heavy compute (install, typecheck, test, build) runs here, not on the
+# developer machine — the local box has 8GB RAM and thrashes on npm install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The suite, on both ends of the supported Node range. `engines` says >=20 and
+  # the frozen-dataset tooling needs 24, so 20 is the oldest supported runtime and
+  # 24 is the one the strip-types scripts assume. A green run on only one of them
+  # would not say which.
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Node ${{ matrix.node }} — install, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # Both Node versions are run to completion: a 20-only failure is a different
+      # finding from a 24-only one, and fail-fast would hide the second.
+      fail-fast: false
+      matrix:
+        node: ['20', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          # No `cache: 'npm'`: no package-lock.json is committed, so setup-node
+          # has no dependency set to key a cache on and would silently skip it.
+
+      - name: Install dependencies
+        # `npm install`, NOT `npm ci`. There is no lockfile in the repository, and
+        # `npm ci` refuses to run without one. Committing a lockfile would make
+        # this reproducible; until then the install is resolved fresh on every run.
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        # Runs first: it is the cheapest signal, and it is the only step that reads
+        # the test files' types as well as the sources'.
+        run: npm run typecheck --if-present
+
+      - name: Test
+        # `tee` so the summary step below can count the tests even when this step
+        # fails — a job that reports "failed" without saying how much ran is not
+        # worth the red X.
+        run: |
+          set -o pipefail
+          npm run test --if-present 2>&1 | tee vitest.log
+
+      - name: Test summary
+        if: always()
+        run: |
+          {
+            echo "### Test results — Node ${{ matrix.node }}"
+            echo
+            if [ -f vitest.log ]; then
+              # vitest prints one summary block per workspace, so the counts are
+              # summed rather than read off the last block.
+              passed=$(awk '/^[[:space:]]*Tests[[:space:]]/ { for (i=1;i<=NF;i++) if ($i=="passed") t+=$(i-1) } END { print t+0 }' vitest.log)
+              failed=$(awk '/^[[:space:]]*Tests[[:space:]]/ { for (i=1;i<=NF;i++) if ($i=="failed") t+=$(i-1) } END { print t+0 }' vitest.log)
+              files=$(awk '/^[[:space:]]*Test Files[[:space:]]/ { for (i=1;i<=NF;i++) if ($i=="passed") t+=$(i-1) } END { print t+0 }' vitest.log)
+              echo "| metric | count |"
+              echo "|---|---|"
+              echo "| tests passed | **$passed** |"
+              echo "| tests failed | $failed |"
+              echo "| test files passed | $files |"
+            else
+              echo "No test output was produced — the suite did not start."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Typecheck the test suite
+        # Only apps/agent has test files, and its `typecheck` script deliberately
+        # stops at src/ (tsconfig.json's include). This is the step that holds the
+        # tests to the same standard — otherwise a suite could pass with types that
+        # do not compile and only be discovered when someone tried to build it.
+        # Ordered after the summary so a type error here cannot suppress the count.
+        run: npm run typecheck:test --workspace apps/agent --if-present
+
+      - name: Build
+        run: npm run build --if-present
+
+  # ---------------------------------------------------------------------------
+  # Frozen-dataset integrity.
+  #
+  # The provenance claim rests on the committed bytes in apps/agent/data/frozen/:
+  # every verdict's dataset_sha256 names them, so a single edited or truncated file
+  # invalidates the record. The script recomputes each file's sha256 from its
+  # bytes, checks every row lies inside the window its kind may cover, and checks
+  # timestamps are strictly ascending. It exits non-zero on any problem, which is
+  # exactly the gate wanted here.
+  #
+  # Pinned to Node 24 because it runs through `--experimental-strip-types`, and it
+  # needs no `npm install`: it imports only node builtins plus the dependency-free
+  # src/data/freezeWindow.ts, which is what lets it run before anything is built.
+  # ---------------------------------------------------------------------------
+  frozen-dataset:
+    name: Frozen dataset integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Verify frozen partitions against the protocol
+        run: |
+          set -o pipefail
+          node --experimental-strip-types apps/agent/scripts/rebuild-manifest.ts --check 2>&1 | tee manifest-check.log
+
+      - name: Integrity summary
+        if: always()
+        run: |
+          {
+            echo "### Frozen dataset"
+            echo
+            if [ -f manifest-check.log ]; then
+              grep -E 'combined dataset hash|entries \(expected|all files intact' manifest-check.log || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # The hash-chained decision log.
+  #
+  # The chain is the only thing that makes "the verdicts were not edited after the
+  # fact" checkable, so a broken chain is a build failure rather than a note. The
+  # log is committed (it is a submission checklist item), so this runs as soon as
+  # the first entry lands; until then the job says so and passes.
+  #
+  # Runs the verifier through `tsx` rather than `dist/log/verify.js` on purpose: it
+  # must not go green merely because a build succeeded, and it must not go red
+  # because an unrelated module failed to compile. tsx resolves the source's
+  # `./x.js` specifiers, which Node's strip-types mode does not.
+  # ---------------------------------------------------------------------------
+  decision-log:
+    name: Decision log chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        # Skipped while there is no log to verify, so this job costs one checkout
+        # until the first entry is committed.
+        if: hashFiles('apps/agent/logs/decisions.jsonl') != ''
+        run: npm install --no-audit --no-fund
+
+      - name: Verify the hash chain
+        run: |
+          LOG=apps/agent/logs/decisions.jsonl
+          if [ ! -f "$LOG" ]; then
+            echo "no decision log committed yet — nothing to verify"
+            exit 0
+          fi
+
+          set +e
+          # `--no-install` so a missing tsx is a hard failure rather than a silent
+          # download from the registry mid-run.
+          report=$(npx --no-install tsx apps/agent/src/log/verify.ts --file "$LOG" 2>&1)
+          status=$?
+          set -e
+          echo "$report"
+
+          # The verifier's CLI entry point runs only when it detects it was invoked
+          # directly. If that detection ever stops working under the runner, the
+          # exit code is 0 and a broken chain would pass — so the report's own
+          # PASS/FAIL line is required as evidence that it actually ran.
+          if ! printf '%s' "$report" | grep -qE '^(PASS|FAIL) — '; then
+            echo "::error::the verifier produced no PASS/FAIL report — it did not run"
+            exit 1
+          fi
+          exit $status
+
+      - name: Log summary
+        if: always()
+        run: |
+          {
+            echo "### Decision log"
+            echo
+            echo '```'
+            if [ -f apps/agent/logs/decisions.jsonl ]; then
+              wc -l < apps/agent/logs/decisions.jsonl | xargs echo "lines:"
+            else
+              echo "no log committed yet"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
