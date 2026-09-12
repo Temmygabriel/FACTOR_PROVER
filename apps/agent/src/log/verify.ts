@@ -46,11 +46,24 @@
  * read is not a verdict, so this function throws rather than returning a
  * result.
  *
- *   node dist/log/verify.js <path-to-decisions.jsonl>
- *   node dist/log/verify.js --file <path-to-decisions.jsonl>
+ * HOW TO RUN IT. Both forms are accepted, and both take the same path.
  *
- * Exit code 0 means the log verified, 1 means it did not. Both forms are
- * accepted because the npm script and CI already call it with `--file`.
+ *   npm run verify-log --workspace apps/agent      # from a checkout, after npm install
+ *   npx tsx src/log/verify.ts --file logs/decisions.jsonl
+ *   node dist/log/verify.js --file logs/decisions.jsonl   # after npm run build
+ *
+ * The npm script runs the SOURCE through tsx rather than `node dist/...` on
+ * purpose. The command is quoted by `GET /api/log/verify` as the way for a
+ * reader who does not trust this server to reproduce its result, and a
+ * reproduction that fails with "Cannot find module dist/log/verify.js" until you
+ * have run a build reads as "the verification does not work". It must work from
+ * a fresh clone with nothing but `npm install`, and it must not depend on the
+ * build succeeding — a chain that verifies only when the compiler is happy is
+ * not an independent check.
+ *
+ * Exit code 0 means the log verified, 1 means it did not. `--file` is the form
+ * the npm script and CI both use; the bare positional form is accepted because
+ * it is what a person types.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -340,8 +353,8 @@ function printReport(path: string, result: VerifyResult): void {
 }
 
 /**
- * The path to verify, from either `verify.js <path>` or the `verify.js --file
- * <path>` form the npm script and CI use. Null when neither was supplied.
+ * The path to verify, from either the bare positional form or the `--file
+ * <path>` form that the npm script and CI use. Null when neither was supplied.
  */
 function pathArgument(args: string[]): string | null {
   if (args[0] === '--file') return args[1] ?? null;
@@ -352,7 +365,14 @@ function pathArgument(args: string[]): string | null {
 function main(args: string[]): number {
   const path = pathArgument(args);
   if (path === null) {
-    process.stderr.write('usage: node dist/log/verify.js [--file] <path-to-decisions.jsonl>\n');
+    process.stderr.write(
+      // Deliberately two separate commands rather than an `npm run ... -- --file`
+      // override: the npm script already passes its own `--file`, so an appended
+      // one would be ignored and silently verify the default path instead of the
+      // one asked for. Naming tsx for the other-file case is the honest form.
+      'usage: npm run verify-log --workspace apps/agent        (verifies the default log)\n' +
+        '   or: npx tsx src/log/verify.ts --file <path-to-decisions.jsonl>\n',
+    );
     return 1;
   }
   if (!existsSync(path)) {

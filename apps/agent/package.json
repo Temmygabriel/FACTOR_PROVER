@@ -16,7 +16,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
-    "verify-log": "node dist/log/verify.js --file logs/decisions.jsonl"
+    "verify-log": "tsx src/log/verify.ts --file logs/decisions.jsonl"
   },
   "dependencies": {
     "cors": "^2.8.5",

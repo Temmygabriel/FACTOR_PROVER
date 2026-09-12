@@ -92,9 +92,16 @@ jobs:
         # tests to the same standard — otherwise a suite could pass with types that
         # do not compile and only be discovered when someone tried to build it.
         # Ordered after the summary so a type error here cannot suppress the count.
+        #
+        # `!cancelled()` rather than the default: without it, a failing Test step
+        # skips this one and the Build below, so each push reveals only the first
+        # broken layer and the next problem costs another full round trip. The only
+        # thing that should suppress these is the run being cancelled outright.
+        if: ${{ !cancelled() }}
         run: npm run typecheck:test --workspace apps/agent --if-present
 
       - name: Build
+        if: ${{ !cancelled() }}
         run: npm run build --if-present
 
   # ---------------------------------------------------------------------------
