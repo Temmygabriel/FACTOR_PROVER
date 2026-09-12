@@ -223,10 +223,31 @@ export class SessionLoop {
    * exists for tests and CLI use, which do want to await the whole thing.
    */
   start(): ControlResponse {
-    if (this.phase === 'running') {
+    const begun = this.beginSession();
+    if (begun.ok) void this.runLoop();
+    return begun;
+  }
+
+  /**
+   * The shared preamble for both ways into the loop: `start()` for an HTTP
+   * handler, `runToCompletion()` for a CLI run.
+   *
+   * It exists because the two paths must not be able to diverge. Before it, the
+   * CLI path skipped the phase transition and the provenance note, so a headless
+   * session ran to completion and then reported `phase: idle` — indistinguishable
+   * from a session that never started.
+   *
+   * `this.breaker.check()` rather than `this.breaker.currentState.tripped`:
+   * `check()` is the method that EVALUATES the rules and trips on the first
+   * violation. Reading `currentState` only asks whether a trip has already
+   * happened, and nothing else in the process ever calls `check()` — so reading
+   * the state alone would mean no rule could ever fire.
+   */
+  private beginSession(): ControlResponse {
+    if (this.running) {
       return { ok: false, phase: this.phase, detail: 'session is already running' };
     }
-    if (this.breaker.currentState.tripped) {
+    if (this.breaker.check().tripped) {
       return {
         ok: false,
         phase: this.phase,
@@ -242,8 +263,6 @@ export class SessionLoop {
 
     this.bus.emit('session_started', `session ${this.sessionId} started`, {});
     this.emitProvenanceNote();
-
-    void this.runLoop();
     return { ok: true, phase: this.phase, detail: 'session started' };
   }
 
@@ -278,9 +297,19 @@ export class SessionLoop {
     return { ok: true, phase: this.phase, detail: state.detail };
   }
 
-  /** Await the whole loop. For tests and CLI runs, never for an HTTP handler. */
-  async runToCompletion(): Promise<void> {
-    await this.runLoop();
+  /**
+   * Await the whole loop. For CLI runs and the demo runner, never for an HTTP
+   * handler.
+   *
+   * Returns the same `ControlResponse` `start()` does, so a headless caller can
+   * tell "the run finished" from "the run never began" — a distinction that
+   * matters when the reason is a tripped breaker, which is a thing an operator
+   * has to be told about rather than left to infer from an empty log.
+   */
+  async runToCompletion(): Promise<ControlResponse> {
+    const begun = this.beginSession();
+    if (begun.ok) await this.runLoop();
+    return begun;
   }
 
   // -------------------------------------------------------------------------
@@ -303,7 +332,14 @@ export class SessionLoop {
           break;
         }
 
-        const state = this.breaker.currentState;
+        // `check()` evaluates every rule and trips on the first violation;
+        // `currentState` would only report a trip that had already happened, and
+        // this is the only place in the process where a rule can be evaluated at
+        // all. Reading the state here instead left every budget, the
+        // consecutive-failure limit and the degeneracy rule inert — the loop
+        // would spend an unbounded day and never write the CIRCUIT_BREAK entry
+        // that says why it stopped.
+        const state = this.breaker.check();
         if (state.tripped) {
           this.haltOnBreaker(state);
           break;

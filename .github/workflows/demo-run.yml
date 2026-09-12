@@ -1,0 +1,204 @@
+name: Demo run
+
+# Produces the decision log — the one durable artifact this project is judged on.
+#
+# WHY THIS IS A WORKFLOW AND NOT A BUTTON ON THE SITE. The agent is deployed on
+# Render's free tier, which has no persistent disk. The container is replaced
+# whenever the service sleeps, and `apps/agent/logs/decisions.jsonl` is replaced
+# with it. A session that runs for an hour on a filesystem that forgets is not a
+# record, and a judge who opens the URL after any idle period sees an empty
+# product however good the interface is around it.
+#
+# A GitHub runner has a real filesystem, and the frozen dataset the verdicts are
+# computed from is committed. So the same `SessionLoop` the deployed server runs
+# can be run here, to completion, and the log it writes can be committed — which
+# is what makes it durable, checkable and re-runnable.
+#
+# NO SECRETS, NO ACCOUNTS, NO CARD. With no provider keys configured the loop
+# falls through to its deterministic enumerator, which is a pure function of the
+# attempt index. That is what makes the run reproducible, and it is also why this
+# workflow needs nothing set up: a judge with a GitHub login can press Run and
+# get the same session. Nothing here is billed to anyone.
+#
+# ANYONE CAN RUN IT. Actions tab -> Demo run -> Run workflow. The default input
+# is the policy's own daily ceiling, so the default run stops where the
+# preregistered rules say a session must stop rather than being cut off by them.
+#
+# IT DOES NOT TRADE. `BITGET_PAPER_TRADING` and `ENABLE_EXECUTION` are left
+# unset on purpose, so the Execution Guard refuses every order intent at CHECK 1.
+# A promoted factor is still logged with its full evidence; the order that would
+# follow it is declined and the refusal is recorded.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: >-
+          Hypotheses to attempt. The default is the policy's own
+          max_hypotheses_per_day, which is also the number the circuit breaker
+          enforces — a larger value is allowed but the session will halt on the
+          breaker and record a CIRCUIT_BREAK entry when it gets there.
+        required: true
+        default: '200'
+      commit:
+        description: >-
+          Commit the resulting log back to this branch. Set false to CHECK that
+          a committed log reproduces without changing anything: the run still
+          compares its decisions against the committed log and fails if they
+          differ, but leaves the working tree alone.
+        type: boolean
+        default: true
+
+# Pushing the log back needs write access. Everything else in this repository
+# runs with `contents: read`; this is the one workflow that writes.
+permissions:
+  contents: write
+
+# Never cancel a run in progress: it would leave a half-written log in the
+# working tree, and the next run would compare against it. Queue instead.
+concurrency:
+  group: demo-run-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  run-session:
+    name: Run a session and commit the log
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Kept so the commit step can push with the run's own GITHUB_TOKEN.
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # 20 rather than 24: it is the version `engines` declares as the floor
+          # and the version the Render service runs, so this session is produced
+          # by the same runtime that produces the live one.
+          node-version: '20'
+
+      - name: Install dependencies
+        # `npm install`, not `npm ci` — there is no committed lockfile yet, which
+        # is a known gap rather than an oversight. See PROGRESS.md.
+        run: npm install --no-audit --no-fund
+
+      - name: Verify the frozen dataset before using it
+        # Everything below is computed from these bytes, and every entry records
+        # their hash. Checking them first means a run cannot quietly produce a
+        # log against a dataset that does not match the committed one.
+        run: node --experimental-strip-types apps/agent/scripts/rebuild-manifest.ts --check
+
+      - name: Run the session
+        env:
+          # Stated rather than left to the default, because the whole run depends
+          # on it: this is what makes a keyless session deterministic instead of
+          # failing with no proposals at all.
+          LLM_ALLOW_DETERMINISTIC_FALLBACK: 'true'
+          # NOTE: BITGET_PAPER_TRADING and ENABLE_EXECUTION are deliberately NOT
+          # set. Any promoted factor's order intent is refused at Execution Guard
+          # CHECK 1 and the refusal is recorded. This workflow never trades.
+        run: |
+          set -o pipefail
+          npx tsx apps/agent/src/scripts/run-session.ts \
+            --iterations "${{ inputs.iterations }}" \
+            --out apps/agent/logs/decisions.jsonl \
+            --replace 2>&1 | tee demo-run.log
+
+      - name: Verify the log, as a reader would
+        # Deliberately AFTER the runner, which already verified the file it wrote.
+        # This is the command the README tells a sceptical reader to run, against
+        # the bytes on disk, through the standalone CLI entry point — so the
+        # workflow demonstrates the reproduction path instead of only claiming it
+        # works. ci.yml depends on that same entry-point detection being live.
+        run: |
+          set -o pipefail
+          npx tsx apps/agent/src/log/verify.ts \
+            --file apps/agent/logs/decisions.jsonl 2>&1 | tee verify.log
+          if ! grep -qE '^(PASS|FAIL) — ' verify.log; then
+            echo "::error::the verifier produced no PASS/FAIL report — it did not run"
+            exit 1
+          fi
+
+      - name: Commit the log
+        if: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          LOG=apps/agent/logs/decisions.jsonl
+
+          if [ ! -f "$LOG" ]; then
+            echo "::error::the run produced no log"
+            exit 1
+          fi
+
+          # Evidence that the run reached its own verification step. A missing
+          # PASS line means the runner did not get that far, and committing a
+          # log that was never verified is the one thing this must not do.
+          if ! grep -qE '^\[run\] PASS — ' demo-run.log; then
+            echo "::error::the runner never reported PASS — the log is not to be committed"
+            exit 1
+          fi
+
+          # Checked rather than assumed. If the path were ever gitignored, a
+          # plain `git add` would stage nothing, the diff check below would find
+          # no change, and this step would report success having committed
+          # nothing at all.
+          if git check-ignore -q "$LOG"; then
+            echo "::error::$LOG is ignored by .gitignore — it is a submission artifact"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LOG"
+
+          if git diff --cached --quiet; then
+            echo "the run reproduced the committed log exactly; nothing to commit"
+            exit 0
+          fi
+
+          ENTRIES=$(wc -l < "$LOG" | tr -d ' ')
+          git commit -F - <<'MSG'
+          demo run: session on the frozen dataset
+
+          Produced by .github/workflows/demo-run.yml, which runs the same
+          SessionLoop the deployed server runs, against the committed frozen
+          dataset, with no provider keys configured. Proposals therefore come
+          from the deterministic enumerator and the session is reproducible.
+
+          The log is hash-chained and verifies; every entry records the policy
+          and dataset hashes it was computed against. KILLED verdicts outnumber
+          PROMOTED ones by design — that is the result, not a failure.
+
+          Co-Authored-By: Claude Code <noreply@anthropic.com>
+          MSG
+
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "committed $ENTRIES entries to ${{ github.ref_name }}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Demo run"
+            echo
+            if [ -f apps/agent/logs/decisions.jsonl ]; then
+              entries=$(wc -l < apps/agent/logs/decisions.jsonl | tr -d ' ')
+              echo "- entries: **$entries**"
+            else
+              echo "- no log was produced"
+            fi
+            echo "- committed: \`${{ inputs.commit }}\`"
+            echo
+            echo '```'
+            if [ -f demo-run.log ]; then
+              # The runner's own closing block: the verdict tally, why each
+              # hypothesis was decided, the head hash, and PASS/FAIL.
+              sed -n '/^\[run\] finished/,$p' demo-run.log
+            else
+              echo "the run produced no output"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
