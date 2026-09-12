@@ -102,6 +102,26 @@ export interface DecisionRow {
   generator: string;
   partition_used: string;
 
+  /**
+   * How many hypotheses this session had attempted when this verdict was
+   * reached — the family size the Benjamini-Hochberg correction was applied
+   * across.
+   *
+   * WHY THIS IS FORWARDED. The row already carries
+   * `metrics.bh_adjusted_threshold`, which is `(rank / m) * fdr_level`, but the
+   * rank is not exposed and the FDR level alone does not determine `m`. So the
+   * family size is NOT recoverable from the rest of the row: without this field
+   * the log screen can show the bar a hypothesis failed to clear but not how
+   * many hypotheses had raised it, and "the bar tightened as more hypotheses
+   * were tested" — the fact that makes a KILL read as science rather than as a
+   * broken product — becomes an assertion the reader cannot check.
+   *
+   * It is the count AT THE TIME, recorded per entry, not the session's current
+   * total. Those differ for every entry but the last, and rendering today's
+   * count beside an older verdict would be a different and false statement.
+   */
+  total_hypotheses_attempted_this_session: number;
+
   decision: GateDecisionType | 'CIRCUIT_BREAK';
   reason: KillReason | null;
   detail: string;

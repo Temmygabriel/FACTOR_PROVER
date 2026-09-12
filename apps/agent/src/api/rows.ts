@@ -109,6 +109,10 @@ export function entryToRow(entry: DecisionLogEntry, policy: GatePolicy): Decisio
     timestamp_utc: entry.timestamp_utc,
     generator: entry.generator,
     partition_used: entry.partition_used,
+    // Forwarded so the log screen can say how large the family was when this
+    // verdict was reached. Not derivable from metrics.bh_adjusted_threshold —
+    // see the field's note in contract.ts.
+    total_hypotheses_attempted_this_session: entry.total_hypotheses_attempted_this_session,
     decision: entry.gate_decision as DecisionRow['decision'],
     reason: (entry.gate_reason ?? null) as KillReason | null,
     detail: entry.gate_detail,
