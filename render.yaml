@@ -1,0 +1,75 @@
+# Render blueprint — the backend half of the Factor Prover deployment.
+#
+# Render reads this file from the repo root when you create a Blueprint, so the
+# build and start commands live in version control instead of a web form where
+# they can be neither reviewed nor reproduced.
+#
+# Three decisions here are load-bearing, and each would fail quietly rather than
+# loudly if it were wrong.
+#
+# 1. `startCommand` changes directory before launching. That is not cosmetic.
+#    src/session/loop.ts resolves its decision log as the RELATIVE path
+#    `logs/decisions.jsonl`, so the process's working directory decides which
+#    file a session appends to. Launching from the repo root would write to
+#    `<repo>/logs/decisions.jsonl` while `GET /api/log/verify` advertises
+#    `npm run verify-log --workspace apps/agent`, which verifies
+#    `apps/agent/logs/decisions.jsonl`. The server and its own advertised
+#    reproduction command would then be reading two different files — and the one
+#    panel in the product whose whole job is letting a reader check the record
+#    would be pointing somewhere else. `cd apps/agent` makes the two agree.
+#
+# 2. `--include=dev` on the install. `tsc` is a devDependency, so if Render sets
+#    NODE_ENV=production the install would skip it and the build would fail on a
+#    missing compiler. Asking for devDependencies explicitly makes the build
+#    independent of that default.
+#
+# 3. NODE_VERSION is pinned to 24 because CI actually tests Node 24. Leaving it
+#    unset would mean deploying an interpreter nothing has ever run the suite on.
+#
+# NOT set here, deliberately:
+#
+#   ADMIN_TOKEN — setting it requires an `x-admin-token` header on POST
+#   /api/start, /api/stop and /api/reset, and the frontend never sends one. Set
+#   it and the Pause/Resume/Reset buttons in the UI stop working. The server
+#   itself logs a reminder to set it before leaving the loop unattended; for a
+#   demo that someone is watching, leaving it open is the intended configuration.
+#
+#   GROQ_API_KEY — prompted for below but safe to leave blank. Without it the
+#   loop falls back to the deterministic enumerator by design, so the agent still
+#   runs end to end; the hypotheses are just less interesting.
+#
+# Note on storage: Render's free plan has no persistent disk, so decision-log
+# entries written at runtime live only as long as the instance. The committed
+# log is the durable artifact and a redeploy restores it. This is disclosed
+# rather than hidden — a log that silently resets is exactly the kind of thing
+# this project exists to not do.
+
+services:
+  - type: web
+    name: factor-prover-agent
+    runtime: node
+    plan: free
+    # Frankfurt is the closest of Render's regions to the builder, who is in
+    # Nigeria. If Render rejects the region on this plan, `oregon` (the default)
+    # is the drop-in alternative.
+    region: frankfurt
+    branch: main
+    autoDeploy: true
+    buildCommand: npm install --no-audit --no-fund --include=dev && npm run build --workspace apps/agent
+    startCommand: cd apps/agent && node dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+
+      # Set this to the Vercel URL once the frontend is deployed. Until it is
+      # set, the deployed frontend is CORS-blocked: the server keeps an explicit
+      # origin allowlist and does not fall back to `origin: true`. Leaving it
+      # blank for the first deploy is fine — the server logs which origins it
+      # will accept, so the value to correct is visible from the service log.
+      - key: WEB_ORIGIN
+        sync: false
+
+      # Optional. Blank is a supported configuration (see the note above).
+      - key: GROQ_API_KEY
+        sync: false
