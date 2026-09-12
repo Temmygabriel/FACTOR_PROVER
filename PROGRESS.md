@@ -31,14 +31,22 @@
 | CI: typecheck + test + build | **Green — 4/4 jobs. 3 type errors and 8 test failures found and fixed en route** |
 | Frontend production build | **Verified — `next build` compiled; 4 routes, 6 static pages generated** |
 | Frozen dataset integrity job | **Green — every file re-hashed against the committed manifest on every push** |
-| Vercel deploy | **Ready to deploy — not yet started** |
+| Render backend deploy | **Live and verified — `https://factor-prover-agent.onrender.com`** |
+| Vercel deploy | **Ready — this is the next step** |
+
+**Backend is deployed and independently verified (2026-09-12).** Render created
+`factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
+service was then tested from outside by its own public URL rather than trusted because a
+dashboard said "Deployed" — see "The deployment, verified" below for what was actually
+checked. Everything the wire contract promises answers.
 
 **Vercel-ready: yes, the build gate is passed.** `next build` ran on CI and produced all four
 routes (`/`, `/log`, `/leaderboard`, `/_not-found`) with no build-time env var required, which
-is the first time this frontend has ever been compiled. What is *not* done is the other half:
-the frontend needs a deployed backend to talk to, so Render comes first, then Vercel with the
-API base URL set. Until then the deployed frontend renders its `BackendNotice` panels by
-design rather than failing — but that is a degraded demo, not the deliverable.
+is the first time this frontend has ever been compiled. The frontend needs one thing at build
+time — `NEXT_PUBLIC_API_BASE_URL` — and it is baked into the bundle, so it must be set *during*
+the Vercel project creation, not after. Until the two are pointed at each other the deployed
+frontend renders its `BackendNotice` panels by design rather than failing, but that is a
+degraded demo, not the deliverable.
 
 ---
 
@@ -410,6 +418,61 @@ verification: Render (backend + keep-warm ping) first, then Vercel with the API 
 
 ---
 
+## The deployment, verified (2026-09-12)
+
+### Render
+
+`render.yaml` was created at the repo root and committed as `ee418a7`, so the build and start
+commands live in version control rather than in a web form where they can be neither reviewed
+nor reproduced. Three settings in it are load-bearing and each would fail *quietly* if wrong:
+
+1. **`startCommand` is `cd apps/agent && node dist/index.js`.** Not cosmetic. `loop.ts`
+   resolves its decision log as the *relative* path `logs/decisions.jsonl`, so the process's
+   working directory decides which file a session appends to. Launching from the repo root
+   would write to `<repo>/logs/decisions.jsonl` while `GET /api/log/verify` advertises
+   `npm run verify-log --workspace apps/agent`, which verifies
+   `apps/agent/logs/decisions.jsonl`. The server and its own advertised reproduction command
+   would then be reading two different files — and the one panel whose whole job is letting a
+   reader check the record would be pointing somewhere else.
+2. **`--include=dev` on the install.** `tsc` is a devDependency; if Render sets
+   `NODE_ENV=production` the install would skip it and the build would fail on a missing
+   compiler.
+3. **`NODE_VERSION` pinned to 24**, because CI actually tests Node 24. Unset would mean
+   deploying an interpreter nothing has ever run the suite on.
+
+Deliberately **not** set: `ADMIN_TOKEN` (it gates `/api/start|stop|reset` behind an
+`x-admin-token` header the frontend never sends — setting it would break the Pause/Resume
+buttons in the UI), and `GROQ_API_KEY` (blank is a supported configuration; the loop falls
+back to the deterministic enumerator by design).
+
+### What was actually checked, from outside
+
+The service was probed over its public URL rather than trusted because a dashboard read
+"Deployed". Every route answered, with real values:
+
+| Check | Observed |
+|---|---|
+| `GET /health` | `{"ok":true,"phase":"idle","uptime_s":568}` |
+| `GET /api/status` | `dataset_frozen: true`, `frozen_files: 33`, `dataset_sha256` matching the committed manifest; `partitions_sha256` a **string**, confirming the Run-1 type fix reached production |
+| `GET /api/leaderboard` | empty, with `empty_reason`: "No hypotheses have been attempted yet. Nothing has been tested, so nothing has been promoted or rejected — this is an empty session, not a null result." |
+| `GET /api/log` | `{"entries":[],"total":0,"next_cursor":null}` |
+| `GET /api/log/verify` | `ok:false` + `unavailable_reason: "no decision log at logs/decisions.jsonl yet"` — **correct, not broken**: no session has run, so there is nothing to check. This is the "nothing to check" state that the endpoint exists to keep distinct from "checked and found broken", reporting correctly in production. |
+| `GET /api/stream` | `200`, `Content-Type: text/event-stream`, `retry: 3000` delivered through Cloudflare with `no-transform` — SSE survives the CDN |
+| CORS from a foreign origin | **No `Access-Control-Allow-Origin` header** — correctly refused, because `WEB_ORIGIN` is still blank |
+
+That last row is both correct and the reason for next action 12: the deployed frontend cannot
+talk to this backend until `WEB_ORIGIN` names it.
+
+### Findings from the deploy
+
+| # | Finding | Severity |
+|---|---|---|
+| 25 | **There is no lockfile anywhere in the repo** — not at the root, not per workspace. Every `npm install` (CI, Render, and the coming Vercel build) resolves fresh version ranges from `package.json` alone. For a project whose entire claim is that a reader can reproduce its numbers from a checkout, `npm install` producing a different dependency tree on a different day is a reproducibility hole in the *build*, distinct from the reproducibility of the *data* (which is frozen and hashed). Not urgent — nothing is broken and the deploy succeeded — but it should be closed before submission, and it cannot be closed locally without an `npm install`. | **Reproducibility** |
+| 26 | **The frontend has no way to start the loop.** The loop boots at `phase: 'idle'`, and the UI renders Pause/Resume only for `'running'` or `'paused'`. So a judge opening the deployed dashboard sees a permanently idle agent with no control to change that. `POST /api/start` works and is unauthenticated, but nothing in the UI calls it. Either a Start control is added for the `idle` phase, or the demo script starts the loop via the API before showing the dashboard. | **Demo blocker** |
+| 27 | **Execution is refused at CHECK 1 on the deployed instance.** `/api/status` reports `BITGET_PAPER_TRADING is not "true"` and `ENABLE_EXECUTION is not "true"`, with no Bitget credentials present, so every order is validated and then refused. This is the *honest* configuration and is reported rather than hidden, but it means the deployed demo currently exercises the Execution Guard's refusal path only. Whether to enable paper trading (needs free Bitget demo credentials, no card) is a demo decision, not a correctness one. | **Demo scope** |
+
+---
+
 ## Environment
 
 - Windows 11, 8GB RAM, node v24.14.0, npm 11.9.0, git 2.53.0, Python 3.14.3
@@ -437,12 +500,28 @@ verification: Render (backend + keep-warm ping) first, then Vercel with the API 
 10. ~~Get the vitest suite green~~ — **done** 2026-09-12. 406 tests in 13 files, both Node
     versions. Read the *whole* failure class, not just the line the error names — one of the
     eight was really thirteen.
-11. **Deploy the backend to Render** (free web service, with a keep-warm ping on `/health`).
-    Env vars: `WEB_ORIGIN` (the Vercel URL — cannot be set until Vercel exists, so set it
-    after), `ADMIN_TOKEN`, and `GROQ_API_KEY`. The frozen dataset and the decision log are
-    committed, so a fresh clone has everything the protocol needs.
-12. **Deploy the frontend to Vercel** (Hobby tier), pointing at the Render URL.
-13. Get the Groq key into the Render environment variables; add `GEMINI_API_KEY` when convenient.
+11. ~~Deploy the backend to Render~~ — **done 2026-09-12**, first try, from the committed
+    `render.yaml`. `https://factor-prover-agent.onrender.com`, live and independently
+    verified on every route. Note the *keep-warm ping is not yet set up*, so the free instance
+    sleeps after ~15 min idle and the first request after that pays a 30–60s cold start.
+    **Correction to what this action previously claimed:** the frozen dataset is committed,
+    but the decision log is **not** — `apps/agent/logs/` is empty. A fresh clone has all the
+    data the protocol needs and no recorded session, which is action 17.
+12. **Deploy the frontend to Vercel** (Hobby tier, root directory `apps/web`) with
+    `NEXT_PUBLIC_API_BASE_URL=https://factor-prover-agent.onrender.com` set **during project
+    creation**, not afterwards — it is a `NEXT_PUBLIC_` variable, so it is inlined into the
+    bundle at build time and changing it later requires a redeploy.
+13. **Set `WEB_ORIGIN` on Render to the Vercel URL** once it exists. Until then the deployed
+    frontend is CORS-blocked (verified: no `Access-Control-Allow-Origin` is returned to a
+    foreign origin). The server keeps an explicit allowlist with no `origin: true` fallback,
+    so this is a required step, not a nicety.
+14. Get the Groq key into the Render environment variables; add `GEMINI_API_KEY` when
+    convenient. Both are free and need no card.
+15. Add a lockfile (finding 25). It cannot be generated locally without an `npm install`, so
+    the honest route is a small CI job or workflow-dispatch step that runs `npm install`,
+    commits the resulting `package-lock.json`, and switches CI and Render to `npm ci`.
+16. Decide the `idle`-phase control (finding 26) and whether to enable paper trading
+    (finding 27). Both are demo-scope decisions, not correctness ones.
 14. Keep the local `_dbg*.mjs` / `_e2e.mjs` / `_scratch/` harnesses — they are gitignored, so
     they cannot reach the repo, and they are the **only** way to re-verify the agent locally
     (no `npm install` is permitted). The requirement is "untracked", not "deleted": confirm
@@ -556,3 +635,36 @@ verification: Render (backend + keep-warm ping) first, then Vercel with the API 
   Vercel with the API base set, then `WEB_ORIGIN` back on Render pointed at the Vercel URL.
   Added as next actions 11–13, along with action 17: the submission still needs a real demo
   run, since spec §16's example numbers are mathematically impossible (finding 7).
+
+- **2026-09-12 (later still)** — **The backend is deployed and verified from outside.**
+  `render.yaml` committed as `ee418a7` beforehand, so the deploy was a read of versioned
+  config rather than a form filled in by hand. Render built `factor-prover-agent` first try
+  and it went live at `https://factor-prover-agent.onrender.com`.
+
+  Verification was done by probing the public URL, not by trusting the dashboard word
+  "Deployed": `/health` (`ok`, `phase: idle`, uptime counting), `/api/status` (33 frozen
+  files, the committed `dataset_sha256`, and `partitions_sha256` as a **string** — confirming
+  the Run-1 type fix reached production), `/api/leaderboard` (empty, with an `empty_reason`
+  that explains rather than showing "no data"), `/api/log` (empty page), `/api/log/verify`
+  (`ok:false` + `unavailable_reason` — the correct "nothing to check yet" state, reported
+  correctly in production), and `/api/stream` (SSE headers and `retry: 3000` surviving
+  Cloudflare with `no-transform`). A request from a foreign origin got **no**
+  `Access-Control-Allow-Origin`, which is the allowlist doing its job and is why `WEB_ORIGIN`
+  is now a required step rather than a nicety.
+
+  Three findings, none of them correctness bugs and all of them things that would have been
+  discovered late and painfully:
+
+  - **No lockfile exists anywhere in the repo** (25). Every install — CI, Render, and the
+    coming Vercel build — resolves fresh ranges from `package.json`. The *data* is frozen and
+    hashed; the *build* is not pinned. That is a reproducibility hole in the half of the
+    project that is supposed to be reproducible.
+  - **The deployed frontend will have no way to start the loop** (26): the loop boots `idle`
+    and the UI renders Pause/Resume only for `running`/`paused`.
+  - **Execution is refused at CHECK 1** on the deployed instance (27), because
+    `BITGET_PAPER_TRADING` and `ENABLE_EXECUTION` are unset and no Bitget credentials exist.
+    Honest and reported, but it means the live demo currently exercises only the refusal path.
+
+  Also corrected in this pass: next action 11 had claimed the decision log was committed. It
+  is not — `apps/agent/logs/` is empty. The frozen dataset is committed and the recorded
+  session is not, which is action 17.

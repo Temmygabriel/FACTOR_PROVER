@@ -62,13 +62,22 @@ services:
       - key: NODE_VERSION
         value: "24"
 
-      # Set this to the Vercel URL once the frontend is deployed. Until it is
-      # set, the deployed frontend is CORS-blocked: the server keeps an explicit
-      # origin allowlist and does not fall back to `origin: true`. Leaving it
-      # blank for the first deploy is fine — the server logs which origins it
-      # will accept, so the value to correct is visible from the service log.
+      # The deployed frontend. `allowedOrigins()` in src/index.ts splits this on
+      # commas and always appends localhost:3000 and 127.0.0.1:3000, so local
+      # development against this backend keeps working and this value does not
+      # need to name it.
+      #
+      # An explicit allowlist rather than a reflected origin: two of the control
+      # routes change session state, so `origin: true` would let any website a
+      # visitor opened stop the session.
+      #
+      # Committed as a literal rather than left `sync: false` so that the
+      # allowlist is reviewable config in version control, like the build and
+      # start commands above, instead of a value that exists only in a dashboard
+      # and cannot be diffed. It is a public URL, not a secret, so there is
+      # nothing here that belongs in the environment instead.
       - key: WEB_ORIGIN
-        sync: false
+        value: https://factorprover.vercel.app
 
       # Optional. Blank is a supported configuration (see the note above).
       - key: GROQ_API_KEY
