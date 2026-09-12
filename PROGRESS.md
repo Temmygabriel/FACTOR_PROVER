@@ -26,13 +26,19 @@
 | SSE stream + Express server | **Done — 41/41 route checks over real HTTP** |
 | Secret redaction at the wire boundary | **Done — verified** |
 | Frontend (Next.js) | **Done — 33 files; correctness pass found and fixed 9 bugs** |
-| Test suites + CI workflow | **Written — 13 vitest files, `.github/workflows/ci.yml`, never yet run** |
-| Local git repository | **Does not exist — nothing has ever been committed or pushed** |
-| Vercel deploy | Not started |
+| Test suites + CI workflow | **Green — 13 files, 406 tests, both Node 20 and 24** |
+| GitHub repository | **Live — `Temmygabriel/FACTOR_PROVER`, 4 commits, CI on every push to `main`** |
+| CI: typecheck + test + build | **Green — 4/4 jobs. 3 type errors and 8 test failures found and fixed en route** |
+| Frontend production build | **Verified — `next build` compiled; 4 routes, 6 static pages generated** |
+| Frozen dataset integrity job | **Green — every file re-hashed against the committed manifest on every push** |
+| Vercel deploy | **Ready to deploy — not yet started** |
 
-**Vercel-ready:** Not yet. The frontend exists but has never been type-checked or built
-(no local `npm install` allowed on this machine), so it is unverified until GitHub Actions
-compiles it. Do not attempt a Vercel deploy before a green CI build.
+**Vercel-ready: yes, the build gate is passed.** `next build` ran on CI and produced all four
+routes (`/`, `/log`, `/leaderboard`, `/_not-found`) with no build-time env var required, which
+is the first time this frontend has ever been compiled. What is *not* done is the other half:
+the frontend needs a deployed backend to talk to, so Render comes first, then Vercel with the
+API base URL set. Until then the deployed frontend renders its `BackendNotice` panels by
+design rather than failing — but that is a degraded demo, not the deliverable.
 
 ---
 
@@ -296,16 +302,124 @@ Found by reading, not by a compiler — no compiler has run yet:
 
 ---
 
+## What GitHub Actions actually found (2026-09-12)
+
+The repo was initialised, committed (134 files, 23,433 insertions) and pushed. Then CI ran
+for the first time in the project's life, and every claim in the table above was finally
+tested by a compiler. Three runs, and the pattern is worth recording: **each run revealed
+only the layer above the one that failed.**
+
+### Run 1 — the first typecheck ever: 3 real bugs
+
+All three were genuine, none were false positives, and all three were in code that runtime
+probes had already declared working. Type-checking found what running the code could not:
+
+- `session/loop.ts:978` — `partitions_sha256: partitions`, the whole `LoadedConfig` wrapper
+  instead of its `.sha256`. The endpoint served an object where the contract promises a
+  hash. Every runtime probe stayed green because the field *existed*; only the type said it
+  was the wrong *kind*. The frontend's provenance panel — the one panel whose entire job is
+  to let a reader trace a number to its source — would have rendered `[object Object]`.
+- `data/fundingHistory.ts:95` — `Property 'data' does not exist on type 'never'`. Caused by
+  `body = (await res.json()) as typeof body` where `body` had been narrowed to `null` by an
+  earlier assignment; `as typeof body` resolves to the *narrowed* type, not the declared one.
+  Fixed with a named `FundingPage` interface.
+- `web/app/page.tsx:231` — `HypothesisShape | null | undefined` passed where
+  `HypothesisShape | null` was declared. The panel's contract is explicit and `?? null`
+  keeps it honest instead of widening the prop to accept a case it does not reason about.
+
+Also fixed here: `apps/agent/.env.example` documented `CORS_ORIGIN` while the server reads
+`WEB_ORIGIN`, which would have left the deployed Vercel frontend CORS-blocked; three env vars
+were documented but read by nothing and three were read but undocumented.
+
+### Run 2 — typecheck green, 8 test failures
+
+`Test Files 6 failed | 7 passed (13)`. Each was triaged as product-bug or test-bug before
+anything was edited. **Two were product bugs** — the more interesting half:
+
+- **The suite's test seam could not express "no store".** `manifestCache = null` was
+  indistinguishable from "nothing read yet", so `__setFrozenManifestForTest(null)` fell
+  straight through to the committed `data/frozen/manifest.json` and answered four tests that
+  meant to simulate an *empty* store with the *real* one. The failure direction is what makes
+  this worth naming: the store looked **present** immediately after a test removed it. A test
+  double that silently substitutes the real thing is worse than no double, because it converts
+  "I forgot to set this up" into "this passed".
+- **A NaN t-statistic scored as maximally significant.** `!Number.isFinite` is false for NaN
+  and ±Infinity alike, so both fell through to p = 0 — and p = 0 clears every
+  Benjamini-Hochberg threshold. `tStatFromR` caps |r| at a finite 1e6 so it never returns an
+  infinite t, but it *does* return NaN for a degenerate input such as a zero-variance series.
+  A statistic that was never computed must not be the easiest kind to promote. NaN now takes
+  the same "no evidence" value as `df <= 0`.
+
+Four more were genuinely wrong assertions, and two of those had been **passing for the wrong
+reason**:
+
+- `candleFetch` asserted `[]` for a warm-up read that the frozen store was answering from
+  disk with 300 rows — the stub was never consulted, so the test would have kept passing even
+  if the gate had stopped admitting the read entirely.
+- `freezeWindow` asserted candles have the longer lead-in. Funding's is 8h (one settlement
+  interval) against candles' 5h (240 + 60 min), so the test was simply backwards.
+- `frozenStore`'s "complete store" fixture supplied candle legs only, while `frozenCoverage`
+  enumerates candles *and* funding — so `complete` was correctly false.
+- `fundingHistory` had **13** callbacks that awaited without being `async`. Node reports only
+  the first error, so CI showed one and a careful read of the file found two; the file held
+  thirteen. Fixing only what the error named would have left it unparseable and CI red again.
+
+That last one is the lesson of the whole run: **read the failure to the end of its class, not
+to the end of its message.** The same habit caught the loop.ts bug — a probe that checked the
+key *existed* rather than that the value was the right *kind*.
+
+### Verification without a local `npm install`
+
+Type-stripping probes were used to verify the fixes, and their teeth were proven in both
+directions rather than assumed:
+
+- The seam probe asserts the disk manifest genuinely answers when *unpinned* — so the
+  pinned-null checks cannot pass for the wrong reason. With the new guard removed, it fails
+  exactly the three assertions CI reported, on the committed entry and hash.
+- The gate probe reproduces the 300 frozen rows that masked the `candleFetch` test and
+  confirms the network is consulted only for the unfrozen symbol.
+
+110 runtime checks green (`_dbgfrozen`, `_dbgsse` 27, `_dbgapi` 42, `_dbgseam` 21,
+`_dbggate` 9, `_dbgcover` 11), plus a parse check over every test file.
+
+### Run 3 — green, and the project builds for the first time
+
+All four jobs pass on both Node 20 and Node 24: **13 test files, 406 tests, 0 failures**;
+the frozen-dataset integrity job re-hashes every committed file against the manifest; the
+decision-log job reports that no log is committed yet and passes.
+
+The step that had never once completed is `Build`, and it is worth naming what it did, because
+`npm run build --if-present` at the root is a no-op unless the root script fans out — it does
+(`npm run build --workspaces --if-present`), so both workspaces really built. The agent
+type-checked to `dist/`, and **Next.js compiled the frontend for the first time**: an
+optimized production build, 6 static pages, 4 routes.
+
+```
+Route (app)                    Size     First Load JS
+┌ ○ /                          9.18 kB  104 kB
+├ ○ /_not-found                873 B    88.2 kB
+├ ○ /leaderboard               3.56 kB  98.7 kB
+└ ○ /log                       3.12 kB  98.2 kB
+```
+
+No build-time environment variable was required, so the frontend is independently
+deployable; it needs only the backend's URL at runtime.
+
+**This is the gate for Vercel, and it is now passed.** What remains is deployment, not
+verification: Render (backend + keep-warm ping) first, then Vercel with the API base set.
+
+---
+
 ## Environment
 
 - Windows 11, 8GB RAM, node v24.14.0, npm 11.9.0, git 2.53.0, Python 3.14.3
 - `gh` v2.100.0 at `C:\Users\USER\AppData\Local\gh-install\bin\gh.exe` (not on PATH), authed as `Temmygabriel`
-- **No local `.git`.** The project directory was never `git init`-ed: it has `.github/` and
-  `.gitignore` but no repository. So nothing has ever been committed, pushed, or run by CI,
-  and **no line of this project has ever been type-checked by a compiler** — every "Done" in
-  the table above rests on runtime probes and reading, not on `tsc`. The GitHub repo
-  `Temmygabriel/FACTOR_PROVER` exists and is empty. This is the single largest unverified
-  surface in the project and the next action closes it.
+- **Local `.git` now exists.** The repo was initialised and pushed to
+  `Temmygabriel/FACTOR_PROVER` on 2026-09-12. The earlier caveat in this file — that nothing
+  had ever been committed and *no line had ever been type-checked by a compiler* — is now
+  closed: CI type-checks, tests and builds on both Node 20 and Node 24 on every push to
+  `main`. Nothing in this project should be described as verified on the strength of runtime
+  probes alone again now that a compiler is available for free.
 
 ---
 
@@ -319,26 +433,35 @@ Found by reading, not by a compiler — no compiler has run yet:
 6. ~~Execution Guard (`src/execution/guard.ts`) and circuit breaker~~ — **done**.
 7. ~~SSE stream (`src/stream/sse.ts`) and Express server (`src/index.ts`)~~ — **done**, 41/41.
 8. ~~Vitest suites and `.github/workflows/ci.yml`~~ — **written**; 13 files, ~357 `it()` sites.
-9. **`git init` + first commit + push.** The repo has never existed locally. This is the only
-   way to type-check — no local `npm install` is permitted on this machine. Nothing is
-   verified until Actions is green.
-10. Deploy backend to Render (with keep-warm ping on `/health`), frontend to Vercel — **only
-    after a green CI build**. Set `WEB_ORIGIN` to the Vercel URL and set `ADMIN_TOKEN`.
-11. Get the Groq key into the Render environment variables; add `GEMINI_API_KEY` when convenient.
-12. Keep the local `_dbg*.mjs` / `_e2e.mjs` / `_scratch/` harnesses — they are gitignored, so
+9. ~~`git init` + first commit + push~~ — **done** 2026-09-12. Repo live, CI running.
+10. ~~Get the vitest suite green~~ — **done** 2026-09-12. 406 tests in 13 files, both Node
+    versions. Read the *whole* failure class, not just the line the error names — one of the
+    eight was really thirteen.
+11. **Deploy the backend to Render** (free web service, with a keep-warm ping on `/health`).
+    Env vars: `WEB_ORIGIN` (the Vercel URL — cannot be set until Vercel exists, so set it
+    after), `ADMIN_TOKEN`, and `GROQ_API_KEY`. The frozen dataset and the decision log are
+    committed, so a fresh clone has everything the protocol needs.
+12. **Deploy the frontend to Vercel** (Hobby tier), pointing at the Render URL.
+13. Get the Groq key into the Render environment variables; add `GEMINI_API_KEY` when convenient.
+14. Keep the local `_dbg*.mjs` / `_e2e.mjs` / `_scratch/` harnesses — they are gitignored, so
     they cannot reach the repo, and they are the **only** way to re-verify the agent locally
-    after a CI run (no `npm install` is permitted). The requirement is "untracked", not
-    "deleted": confirm with `git check-ignore` after `git init`, and never `git add -f` them.
-    Only `_regen-scratch.sh` is un-ignored, and it is referenced by the `.gitignore` comment
-    as the way to regenerate `_scratch`.
-13. Two findings from the frontend correctness pass that were reported but **not yet acted on**:
+    (no `npm install` is permitted). The requirement is "untracked", not "deleted": confirm
+    with `git check-ignore`, and never `git add -f` them. Only `_regen-scratch.sh` is
+    un-ignored, and it is referenced by the `.gitignore` comment as the way to regenerate
+    `_scratch`. `_dbgseam.mjs`, `_dbggate.mjs` and `_dbgcover.mjs` added 2026-09-12 and
+    confirmed ignored.
+15. Two findings from the frontend correctness pass that were reported but **not yet acted on**:
     - `spotReturnSeries` in `signals.ts` has a doc comment claiming it "returns NaN" for a
       missing point, but the body `continue`s, so the point is simply absent.
     - `guard.ts` CHECK 5's `detail` string overstates its effect.
     Neither changes behaviour; both are the kind of comment that becomes a lie after one edit.
-14. `Killed (N)` in the frontend header counts *hypotheses* while the table lists *log rows*,
+16. `Killed (N)` in the frontend header counts *hypotheses* while the table lists *log rows*,
     so `{killRows.length} of {killCount} shown` can read "51 of 50". Cosmetic, but it is a
     number that does not mean what it says on the page that exists to be honest about numbers.
+17. **Produce the real demo run.** The submission needs a session that actually ran: a
+    committed `logs/decisions.jsonl` with genuine verdicts, and the numbers in the README and
+    demo script replaced with that run's real output. Spec §16's example numbers are
+    mathematically impossible (finding 7) and must not survive into the submission.
 
 ---
 
@@ -382,3 +505,54 @@ Found by reading, not by a compiler — no compiler has run yet:
   **Discovered this pass: the project has no local `.git`.** Nothing has ever been committed
   or pushed, so CI has never run and no code has ever been type-checked. That is now action 9.
 
+
+- **2026-09-12** — **Repository live and CI running for the first time in the project's life.**
+  `git init`, first commit (134 files, 23,433 insertions), pushed to `Temmygabriel/FACTOR_PROVER`.
+  Three CI runs, each revealing only the layer above the one that broke:
+
+  - *Run 1 — first typecheck ever, 3 real bugs.* `loop.ts` assigned the whole `LoadedConfig`
+    wrapper to `partitions_sha256` where a hash string belongs (the provenance panel would
+    have rendered `[object Object]` while every runtime probe stayed green, because the key
+    existed and only its *kind* was wrong); `as typeof body` in `fundingHistory.ts` resolving
+    to the narrowed `null`; `?? null` needed in `page.tsx`. Also fixed: `.env.example`
+    documented `CORS_ORIGIN` while the server reads `WEB_ORIGIN`, which would have left the
+    deployed Vercel frontend CORS-blocked. Added `if: ${{ !cancelled() }}` to the test-typecheck
+    and build steps, so one red layer no longer hides the two below it.
+  - *Run 2 — typecheck green, 8 test failures.* Triaged individually before any edit.
+    **Two product bugs:** the frozen-store test seam could not express "no store"
+    (`manifestCache = null` was indistinguishable from "nothing read yet", so four tests meant
+    to simulate an empty store were answered by the committed manifest — and the store looked
+    *present* right after a test removed it); and `studentTTwoTailedP` scored a NaN statistic
+    as maximally significant, since `!Number.isFinite` is false for NaN and ±Infinity alike and
+    both fell through to p = 0, which clears every BH threshold. NaN now takes the "no evidence"
+    value. **Four wrong assertions**, two of which had been passing for the wrong reason: the
+    `candleFetch` gate test asserted `[]` for a read the frozen store was answering with 300
+    rows from disk, and `freezeWindow` asserted candles have the longer lead-in when funding's
+    is 8h against candles' 5h. `fundingHistory` had **13** callbacks awaiting without `async` —
+    Node names only the first, CI showed one, a careful read found two, and the file held
+    thirteen. Fixing what the error named would have left it unparseable.
+  - Verified without a local `npm install` by type-stripping the real sources: the seam probe
+    asserts the disk manifest answers when *unpinned*, so its pinned-null checks cannot pass
+    for the wrong reason, and with the fix's guard removed it fails exactly the three
+    assertions CI reported. 110 runtime checks green (`_dbgseam` 21, `_dbggate` 9,
+    `_dbgcover` 11, plus the existing 27/42/28).
+  - Pushed as `d918ea3` (CI tooling) and `315723c` (the fixes); CI re-run in flight.
+  - **Still unproven: the `Build` step has never completed.** No Vercel deploy until it does.
+
+- **2026-09-12 (later)** — **CI green; the project builds for the first time in its life.**
+  All four jobs pass on both Node 20 and Node 24: **13 test files, 406 tests, 0 failures**,
+  frozen-dataset integrity re-hashed, decision-log job correctly reporting no log yet.
+
+  The run that matters most is `Build`, which had never once completed. Worth recording what it
+  actually proved, because `npm run build --if-present` at the root is a no-op unless the root
+  script fans out to the workspaces — it does (`--workspaces --if-present`), so both really
+  built: the agent type-checked to `dist/`, and **Next.js compiled the frontend for the first
+  time** — an optimized production build, 6 static pages, 4 routes (`/` 9.18 kB, `/log` 3.12 kB,
+  `/leaderboard` 3.56 kB, `/_not-found` 873 B). No build-time env var was needed, so the
+  frontend is independently deployable and needs only the backend URL at runtime.
+
+  **This passes the gate the user asked about: it is now Vercel-ready.** What remains is
+  deployment, not verification — Render (backend + keep-warm ping on `/health`) first, then
+  Vercel with the API base set, then `WEB_ORIGIN` back on Render pointed at the Vercel URL.
+  Added as next actions 11–13, along with action 17: the submission still needs a real demo
+  run, since spec §16's example numbers are mathematically impossible (finding 7).
