@@ -7,6 +7,7 @@ import { partitionWindow, type PartitionName } from '../../src/config.js';
 import { leadInForKind, type FrozenKind } from '../../src/data/freezeWindow.js';
 import {
   __clearFrozenCache,
+  __resetFrozenManifestForTest,
   __setFrozenManifestForTest,
   frozenDir,
   type FrozenEntry,
@@ -85,7 +86,7 @@ export function installFrozenFixtures(specs: FixtureSpec[]): InstalledFixtures {
     dir,
     entries,
     dispose: () => {
-      __setFrozenManifestForTest(null);
+      __resetFrozenManifestForTest();
       __clearFrozenCache();
       rmSync(dir, { recursive: true, force: true });
     },
@@ -100,7 +101,7 @@ export function installNoFrozenStore(): () => void {
   __setFrozenManifestForTest(null);
   __clearFrozenCache();
   return () => {
-    __setFrozenManifestForTest(null);
+    __resetFrozenManifestForTest();
     __clearFrozenCache();
   };
 }

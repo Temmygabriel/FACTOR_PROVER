@@ -49,13 +49,20 @@ describe('the constants are mutually consistent', () => {
     expect(MAX_LEAD_IN_MS / CANDLE_LEAD_IN_MS).toBeGreaterThan(30);
   });
 
-  it('gives candles a LONGER lead-in than funding', () => {
-    // A 240-minute spot lookback needs 241 minutes of history; a funding step
-    // function needs one settlement. If this ever inverts, one of the two
-    // signals has a warm-up read that cannot be served from disk.
+  it('gives funding a LONGER lead-in than candles', () => {
+    // Funding is the longer of the two, and the two absolute values are pinned
+    // just above — those are the assertions that actually protect the readers,
+    // because each lead-in is sized for its own consumer rather than against the
+    // other. Funding needs one full settlement interval (8h) so a rate is in
+    // force at the first grid minute of the step function; candles need the
+    // longest permitted lookback plus headroom (240 + 60 = 300 min = 5h). This
+    // ordering is a consequence of those two independent requirements, not a
+    // rule, so it is asserted to catch a reflexive edit to either constant — not
+    // because inverting it would itself break a read.
     expect(leadInForKind('candles')).toBe(CANDLE_LEAD_IN_MS);
     expect(leadInForKind('funding')).toBe(FUNDING_LEAD_IN_MS);
-    expect(leadInForKind('candles')).toBeGreaterThan(leadInForKind('funding'));
+    expect(leadInForKind('funding')).toBeGreaterThan(leadInForKind('candles'));
+    expect(FUNDING_LEAD_IN_MS).toBeGreaterThan(CANDLE_LEAD_IN_MS);
   });
 });
 

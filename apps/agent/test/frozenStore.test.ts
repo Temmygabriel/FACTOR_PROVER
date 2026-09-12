@@ -471,9 +471,19 @@ describe('frozenDatasetHash', () => {
 
 describe('frozenCoverage', () => {
   it('reports a complete store when every needed pair and kind is present', () => {
+    // BOTH kinds per symbol, because that is what "every needed pair and kind"
+    // means: `frozenCoverage` enumerates candles AND funding for each
+    // (symbol, partition), so a fixture set holding only candle legs is not a
+    // complete store no matter how many symbols it names. The sibling test below
+    // is the same case with the funding leg removed.
+    //
+    // Coverage reads the manifest only — it never opens a file — so these rows
+    // are never window-checked and their shape does not matter here.
     installed = installFrozenFixtures([
       { symbol: 'BTCUSDT', partition: 'DISCOVERY', kind: 'candles', rows: LEGAL_ROWS },
+      { symbol: 'BTCUSDT', partition: 'DISCOVERY', kind: 'funding', rows: LEGAL_ROWS },
       { symbol: 'RCOINUSDT', partition: 'DISCOVERY', kind: 'candles', rows: LEGAL_ROWS },
+      { symbol: 'RCOINUSDT', partition: 'DISCOVERY', kind: 'funding', rows: LEGAL_ROWS },
     ]);
     const coverage = frozenCoverage({
       symbols: ['BTCUSDT', 'RCOINUSDT'],
@@ -481,7 +491,9 @@ describe('frozenCoverage', () => {
     });
     expect(coverage.complete).toBe(true);
     expect(coverage.missing).toEqual([]);
+    expect(coverage.present).toHaveLength(4);
     expect(coverage.present).toContain('BTCUSDT|DISCOVERY|candles');
+    expect(coverage.present).toContain('BTCUSDT|DISCOVERY|funding');
   });
 
   it('reports the missing FUNDING leg even when the candle leg is present', () => {

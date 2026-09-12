@@ -98,7 +98,23 @@ export function entryKind(e: FrozenEntry): FrozenKind {
 
 let manifestCache: FrozenManifest | null = null;
 
+/**
+ * True once a test has pinned the manifest, whatever it pinned it to.
+ *
+ * Without this flag, `null` carries two meanings at once — "no store exists" and
+ * "nothing has been read yet" — and the cache cannot tell them apart. That
+ * conflation made `__setFrozenManifestForTest(null)` a no-op: the loader saw a
+ * falsy cache, fell through to the committed `data/frozen/manifest.json`, and
+ * answered a test that meant to simulate an EMPTY store with the real one. Four
+ * tests failed on exactly that, and the failure was silent in the direction that
+ * matters — the store looked present when the test had just removed it.
+ */
+let manifestOverridden = false;
+
 export function loadFrozenManifest(): FrozenManifest | null {
+  // Checked before the cache and before disk, because a pinned `null` is a
+  // meaningful value rather than a missing one.
+  if (manifestOverridden) return manifestCache;
   if (manifestCache) return manifestCache;
   const path = join(frozenDir(), 'manifest.json');
   if (!existsSync(path)) return null;
@@ -106,9 +122,25 @@ export function loadFrozenManifest(): FrozenManifest | null {
   return manifestCache;
 }
 
-/** Test seam. */
+/** Test seam. Pins the manifest until reset — `null` means "no store". */
 export function __setFrozenManifestForTest(m: FrozenManifest | null): void {
   manifestCache = m;
+  manifestOverridden = true;
+}
+
+/**
+ * Test seam: undo `__setFrozenManifestForTest` and go back to reading the
+ * committed manifest from disk.
+ *
+ * Cleanup should restore the world the test found, and that world is the real
+ * dataset — not "pinned to no store". Leaving the latter would mean a later test
+ * that forgot to install fixtures would see an empty store instead of the
+ * committed one, which is the same class of silent wrong answer this flag
+ * exists to remove.
+ */
+export function __resetFrozenManifestForTest(): void {
+  manifestCache = null;
+  manifestOverridden = false;
 }
 
 export function frozenEntryFor(

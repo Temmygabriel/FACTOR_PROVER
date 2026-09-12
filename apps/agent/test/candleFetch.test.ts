@@ -105,10 +105,20 @@ describe('the partition gate', () => {
 
   it('admits a warm-up read exactly at the declared lead-in', async () => {
     // The request is allowed through the gate, so the failure is now a network
-    // failure — which is what proves the gate let it past.
+    // one — which is what proves the gate let it past.
+    //
+    // The symbol is deliberately one the frozen dataset does NOT cover. This test
+    // used BTCUSDT, whose committed DISCOVERY file begins exactly at
+    // `DISCOVERY.startMs - CANDLE_LEAD_IN_MS` — so the frozen store could serve
+    // the read, `fetchCandles` returned those rows before reaching the network,
+    // and the `[]` the assertion expected never came from the stub at all. The
+    // test passed for the wrong reason and would have kept passing even if the
+    // gate had stopped admitting the read. An unfrozen symbol makes the stub the
+    // only possible source of an empty result, which is what gives this its
+    // teeth.
     stubChunks([[]]);
     await expect(
-      fetchCandles('BTCUSDT', DISCOVERY.startMs - CANDLE_LEAD_IN_MS, DISCOVERY.startMs + MINUTE_MS, {
+      fetchCandles('SOLUSDT', DISCOVERY.startMs - CANDLE_LEAD_IN_MS, DISCOVERY.startMs + MINUTE_MS, {
         partition: 'DISCOVERY',
         warmupMs: CANDLE_LEAD_IN_MS,
       }),

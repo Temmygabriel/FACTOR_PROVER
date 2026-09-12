@@ -139,9 +139,22 @@ export function logGamma(x: number): number {
  * Two-tailed p-value for a t-statistic with `df` degrees of freedom.
  *
  * p = I_{df/(df+t^2)}(df/2, 1/2)
+ *
+ * NaN is handled BEFORE the finite check, and returns 1 rather than 0.
+ * `Number.isFinite` is false for NaN and for ±Infinity, and the one-line version
+ * of this function lumped them together — but they mean opposite things.
+ * Infinity is a saturated magnitude: a correlation so extreme it overflowed,
+ * which is real evidence and belongs at p = 0. NaN is the ABSENCE of a result,
+ * and it is the reachable case here: `tStatFromR` caps |r| at a finite 1e6, so
+ * it never returns an infinite t, but it does return NaN for a degenerate input
+ * such as a zero-variance series. Scoring that as p = 0 made a statistic that was
+ * never computed the EASIEST kind to promote, because p = 0 clears every
+ * Benjamini-Hochberg threshold there is. So NaN takes the same "no evidence"
+ * value as `df <= 0` above.
  */
 export function studentTTwoTailedP(t: number, df: number): number {
   if (df <= 0) return 1;
+  if (Number.isNaN(t)) return 1;
   if (!Number.isFinite(t)) return 0;
   const x = df / (df + t * t);
   return incompleteBeta(df / 2, 0.5, x);
