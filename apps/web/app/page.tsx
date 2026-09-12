@@ -228,7 +228,13 @@ export default function LoopPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <HypothesisPanel
-          hypothesis={current.hypothesis}
+          // `?? null` because the panel's contract is explicit — null means "no
+          // hypothesis in flight" — while the live state is `undefined` until the
+          // first stream event arrives. The two are the same thing to this panel
+          // (`phase` is what distinguishes an idle loop from a running one), and
+          // normalising here keeps the component's prop type honest rather than
+          // widening it to accept a case it does not reason about.
+          hypothesis={current.hypothesis ?? null}
           hypothesisId={current.hypothesisId}
           generator={current.generator}
           metrics={current.metrics}

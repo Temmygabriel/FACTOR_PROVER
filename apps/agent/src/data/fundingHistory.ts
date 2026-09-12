@@ -61,6 +61,20 @@ const BASE = 'https://api.bitget.com';
  * for the reader by only ever applying rates at or before the minute it is
  * evaluating.
  */
+/**
+ * One page of the funding-history response.
+ *
+ * Named rather than written inline because the assignment below used to cast
+ * with `as typeof body`, which does NOT mean "the declared type of body" — at
+ * that point `body` is still narrowed to the `null` it was initialised with, so
+ * the cast resolved to `null` and the following `body?.data` had no property to
+ * read. `tsc` rejected it; a named type is both correct and self-documenting.
+ */
+interface FundingPage {
+  code?: string;
+  data?: Array<{ fundingRate: string; fundingTime: string }>;
+}
+
 export async function fetchFundingHistory(
   symbol: string,
   earliestMs: number,
@@ -74,8 +88,7 @@ export async function fetchFundingHistory(
       `${BASE}/api/v2/mix/market/history-fund-rate?symbol=${encodeURIComponent(symbol)}` +
       `&productType=usdt-futures&pageSize=${PAGE_SIZE}&pageNo=${page}`;
 
-    let body: { code?: string; data?: Array<{ fundingRate: string; fundingTime: string }> } | null =
-      null;
+    let body: FundingPage | null = null;
     for (let a = 1; a <= attempts; a++) {
       try {
         const res = await fetch(url, { headers: { accept: 'application/json' } });
@@ -84,7 +97,7 @@ export async function fetchFundingHistory(
           if (res.status >= 500 && a < attempts) continue;
           throw new Error(`funding history HTTP ${res.status} for ${symbol}`);
         }
-        body = (await res.json()) as typeof body;
+        body = (await res.json()) as FundingPage;
         break;
       } catch (err) {
         if (a === attempts) throw err;

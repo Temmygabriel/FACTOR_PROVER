@@ -975,7 +975,13 @@ export class SessionLoop {
       started_at: this.startedAt,
       policy_version: String(this.policy.policy_version),
       policy_sha256: loadGatePolicy().sha256,
-      partitions_sha256: partitions,
+      // `.sha256`, not the LoadedConfig itself: `partitions` is the wrapper that
+      // carries the parsed data, the path and the hash. This field is documented
+      // as the sha256 of the committed partitions bytes, and the frontend renders
+      // it as a provenance string — assigning the wrapper would have shipped an
+      // object where a hash belongs, quietly breaking the one panel whose entire
+      // job is to let a reader trace a number back to its source.
+      partitions_sha256: partitions.sha256,
       dataset_sha256: datasetHash,
       dataset_frozen: datasetHash !== null,
       frozen_files: manifest?.entries.length ?? 0,
