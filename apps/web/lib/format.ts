@@ -61,12 +61,25 @@ export function fmtP(value: number | null | undefined): string {
 /**
  * Thresholds: the BH threshold shrinks as the family grows — it is 0.02 at rank
  * 1 of 5 tests and 0.0005 at rank 1 of 200 — so a fixed three decimals would
- * print "0.001" for both 0.0005 and 0.0015. Four decimals below 0.01 keeps the
- * comparison legible at the sizes this loop actually reaches.
+ * print "0.001" for both 0.0005 and 0.0015.
+ *
+ * SIX decimals below 0.01, and the reason is a collision the four-decimals
+ * version actually had. At the family sizes this loop reaches, adjacent ranks
+ * are ~0.0005 apart, so a raw p-value of 0.000510 and a bar of 0.000498 both
+ * rounded to "0.0005" — which renders a kill as "p 0.0005 did not survive the
+ * bar (0.0005)", a sentence that contradicts itself. Six decimals separates
+ * them (0.000510 against 0.000498) and is still short enough to read.
+ *
+ * This is also the formatter for a p-value wherever the p-value is being
+ * COMPARED to the bar rather than listed in a column. `fmtP` above answers a
+ * different question — "roughly how small is this?" — and answers it with
+ * "< 0.001", which is right in the metrics table and useless in a comparison.
+ * Using one function for both sides of a comparison is what keeps the two
+ * numbers in a kill sentence on the same scale.
  */
 export function fmtThreshold(value: number | null | undefined): string {
   if (!valid(value)) return ABSENT;
-  return value >= 0.01 ? value.toFixed(3) : value.toFixed(4);
+  return value >= 0.01 ? value.toFixed(3) : value.toFixed(6);
 }
 
 export function fmtInt(value: number | null | undefined): string {

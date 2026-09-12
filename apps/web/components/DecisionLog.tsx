@@ -22,8 +22,14 @@
  */
 
 import type { ReactNode } from 'react';
-import { killReasonPlain, killReasonTag, killReasonTooltip } from '@/lib/copy';
-import { COLUMN_TIPS, VERDICT_MEANING } from '@/lib/copy';
+import {
+  COLUMN_TIPS,
+  VERDICT_MEANING,
+  killReasonTag,
+  killReasonTechnical,
+  killReasonTooltip,
+  killSentences,
+} from '@/lib/copy';
 import {
   fmtAgo,
   fmtClockUtc,
@@ -41,7 +47,7 @@ import { hasGateEvidence, verdictForDecision } from '@/lib/verdict';
 import { Button } from './Button';
 import { Panel } from './Panel';
 import { Term } from './Term';
-import { VerdictStamp } from './VerdictStamp';
+import { TechnicalDisclosure, VerdictStamp } from './VerdictStamp';
 
 export interface DecisionLogProps {
   entries: DecisionRow[];
@@ -91,6 +97,21 @@ function reasonTag(row: DecisionRow): string {
       // naming a bar the row does not demonstrably clear.
       return 'no reason recorded';
   }
+}
+
+/**
+ * The entry's reason as prose, with a fallback that is true of the row.
+ *
+ * `killSentences` states what the gate measured and what that means, in the
+ * row's own numbers. It returns `[]` for the rows where there is nothing
+ * truthful to say — a circuit break, whose metrics are placeholders, or a kill
+ * that recorded no reason — and those fall back to the verdict's own definition
+ * rather than to a sentence about a measurement that never happened.
+ */
+function reasonLines(row: DecisionRow): string[] {
+  const sentences = killSentences(row);
+  if (sentences.length > 0) return sentences;
+  return [VERDICT_MEANING[verdictForDecision(row)]];
 }
 
 /**
@@ -211,19 +232,31 @@ export function DecisionLog({
               </div>
 
               {/*
-                Every entry gets a reason line, including a promote, which falls
-                back to the definition of its verdict. Giving only kills an
+                Every entry gets a reason, including a promote, which falls back
+                to the definition of its verdict. Giving only kills an
                 explanatory sentence would make the promote rows the terse ones —
                 a subtler version of the same bias, in the other direction.
+
+                The sentences come from the row's own numbers, so a reader can
+                check them against the metrics line directly above. A row with
+                nothing truthful to say about its numbers — a circuit break, a
+                kill with no reason recorded — falls back to the verdict's own
+                definition rather than being handed a sentence about a
+                measurement that was never taken.
               */}
               {row.schema_error ? (
                 <p className="mt-1 max-w-[90ch] text-caption text-ink">
                   reason: <span className="font-mono">{row.schema_error}</span>
                 </p>
               ) : (
-                <p className="mt-1 max-w-[90ch] text-caption text-ink-light">
-                  {killReasonPlain(row.reason) ?? VERDICT_MEANING[verdictForDecision(row)]}
-                </p>
+                <>
+                  {reasonLines(row).map((line, index) => (
+                    <p key={index} className="mt-1 max-w-[90ch] text-label text-ink">
+                      {line}
+                    </p>
+                  ))}
+                  <TechnicalDisclosure lines={killReasonTechnical(row)} />
+                </>
               )}
 
               <p className="mt-1 font-mono text-caption text-ink-light">

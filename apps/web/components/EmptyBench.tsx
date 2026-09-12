@@ -1,0 +1,193 @@
+/**
+ * The empty bench — what the loop view shows before the first hypothesis exists.
+ *
+ * This screen did not exist. The brief describes adding a line above an existing
+ * pre-flight checklist; there is no checklist and no empty state anywhere in the
+ * app — before this file, a fresh session rendered the hypothesis panel's own
+ * "no hypothesis in flight" line above a statistics panel of zeros, which is a
+ * page that looks broken rather than a page that has not started.
+ *
+ * That matters more here than it would in most products, because the deployed
+ * agent runs on a free tier with no persistent disk: the service sleeps when
+ * idle and loses its in-memory session when it wakes, so a reader arriving at a
+ * cold URL meets THIS screen far more often than they meet a live one. The first
+ * impression is usually this one. So it has to state the thesis ("Most will
+ * fail. One might not.") and offer the one action that changes the screen, rather
+ * than reporting an absence.
+ *
+ * THE CHECKLIST REPORTS ONLY WHAT THE SERVER SENDS. The brief's mock lists four
+ * checks, one of which — "Bitget API connected" — no endpoint reports. A row with
+ * a tick beside it that nothing computed is the one thing this product cannot
+ * print, so that row is not here; the generator row replaces it, and it is real.
+ * Each remaining row renders the field it came from, so a reader who doubts a
+ * tick can go and read the same value on the provenance panel below.
+ *
+ * A FAILED CHECK DOES NOT DISABLE THE BUTTON. Whether an unfrozen dataset or an
+ * unavailable execution path should block a session is a research decision, not
+ * a rendering one, and the server accepts /api/start either way. A UI that
+ * refused would be inventing a policy the gate does not have. So the failure is
+ * shown, its consequence is stated, and the reader decides.
+ */
+
+import { Button } from '@/components/Button';
+import { ABSENT, fmtInt, truncHash } from '@/lib/format';
+import type { StatusResponse } from '@/lib/types';
+
+interface Props {
+  status: StatusResponse;
+  onStart: () => void;
+  pending: boolean;
+  /** The control route's own answer, or its failure. Never invented here. */
+  message: string | null;
+}
+
+/**
+ * One pre-flight row. `ok` is null when the server reported nothing to judge —
+ * which renders as an em-dash and not as a tick.
+ */
+interface Check {
+  label: string;
+  value: string;
+  ok: boolean | null;
+  /** Why a failure matters, shown only when the check failed. */
+  consequence?: string;
+}
+
+function checks(status: StatusResponse): Check[] {
+  const { provenance, execution, generator } = status;
+
+  const partitions: Check = provenance.dataset_frozen
+    ? {
+        label: 'Data partitions',
+        value: `frozen · ${fmtInt(provenance.frozen_files)} files · ${truncHash(
+          provenance.dataset_sha256,
+        )}`,
+        ok: true,
+      }
+    : {
+        label: 'Data partitions',
+        value: 'not frozen — no pinned dataset hash',
+        ok: false,
+        consequence:
+          'Hypotheses would be tested against data that is not pinned, so a result could not be reproduced from the repo afterwards.',
+      };
+
+  const policy: Check = {
+    label: 'Gate policy',
+    value: `${provenance.policy_version} · ${truncHash(provenance.policy_sha256)}`,
+    ok: provenance.policy_version.length > 0 && provenance.policy_sha256.length > 0,
+    consequence:
+      'Without a policy version and hash there is no record of which thresholds a verdict was judged against.',
+  };
+
+  /*
+   * `available` and `unverified` are read together. The server reports
+   * `unverified` when it could not confirm the paper-trading configuration —
+   * which is not the same as confirmed-absent, and collapsing the two would tell
+   * a reader either that orders will execute or that they will not, when what is
+   * true is that the server does not know.
+   */
+  const paper: Check = execution.available && !execution.unverified
+    ? { label: 'Paper trading', value: execution.detail, ok: true }
+    : {
+        label: 'Paper trading',
+        value: execution.unverified ? `unverified — ${execution.detail}` : execution.detail,
+        ok: false,
+        consequence: execution.unverified
+          ? 'Unverified is not the same as unavailable: orders may still be refused at the execution guard. A promotion would still be recorded.'
+          : 'No factor can be paper-tracked until the execution path reports available. The gate still runs, and kills and promotions are still recorded.',
+      };
+
+  const tiers = generator.tiers_live.length > 0 ? generator.tiers_live.join(', ') : ABSENT;
+  const gen: Check = {
+    label: 'Hypothesis generator',
+    value: generator.deterministic_fallback
+      ? `${tiers} · deterministic fallback`
+      : tiers,
+    /*
+     * Always ticked when a tier is named, because the field reports which tiers
+     * are LIVE rather than which were configured. An absent tier is a deployment
+     * choice and the server says so itself; there is nothing here for a reader to
+     * act on, and a red cross beside a working configuration would be noise.
+     */
+    ok: generator.tiers_live.length > 0 ? true : null,
+  };
+
+  return [partitions, policy, paper, gen];
+}
+
+function CheckRow({ check }: { check: Check }) {
+  // Ink for a met check, killed red only for one that failed. The green is not
+  // used: `promoted` means "this factor cleared the gate" everywhere else in the
+  // product, and it is not a colour for "this setting looks fine".
+  const glyph = check.ok === true ? '✓' : check.ok === false ? '✗' : ABSENT;
+  const tone =
+    check.ok === false ? 'text-killed' : check.ok === true ? 'text-ink' : 'text-ink-light';
+
+  return (
+    <li className="border-t border-rule py-2 first:border-t-0 first:pt-0">
+      <div className="flex items-baseline justify-between gap-6">
+        <span className="text-label text-ink">{check.label}</span>
+        <span className={`font-mono text-label ${tone}`}>
+          {check.value} {glyph}
+        </span>
+      </div>
+      {check.ok === false && check.consequence ? (
+        <p className="mt-1 max-w-[80ch] text-caption text-ink-light">{check.consequence}</p>
+      ) : null}
+    </li>
+  );
+}
+
+export function EmptyBench({ status, onStart, pending, message }: Props) {
+  const rows = checks(status);
+  // Starting is only meaningful from a phase where the loop is not already
+  // going. From `running` or `paused` the control is the pause/resume button in
+  // the session header, and a second one here would be two controls for one
+  // state.
+  const canStart = ['idle', 'stopped', 'error'].includes(status.phase);
+
+  return (
+    <section
+      id="empty-bench"
+      className="border border-rule bg-surface px-4 py-4"
+      aria-labelledby="empty-bench-heading"
+    >
+      <h2 id="empty-bench-heading" className="text-heading font-semibold text-ink">
+        No hypothesis has been tested yet.
+      </h2>
+      <p className="mt-1 max-w-[80ch] text-label text-ink-light">
+        {canStart
+          ? 'In a moment, the bench will start running them.'
+          : 'The loop is running; the first hypothesis is on its way.'}
+      </p>
+      <p className="mt-3 text-heading text-ink">Most will fail. One might not.</p>
+
+      <div className="mt-5">
+        <h3 className="text-label font-semibold text-ink">Pre-flight</h3>
+        <ul className="mt-2">
+          {rows.map((check) => (
+            <CheckRow key={check.label} check={check} />
+          ))}
+        </ul>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-4">
+        {canStart ? (
+          <Button onClick={onStart} disabled={pending}>
+            {pending ? 'Starting…' : 'Start research session'}
+          </Button>
+        ) : null}
+        {message ? <p className="text-label text-ink">{message}</p> : null}
+      </div>
+
+      {canStart ? (
+        <p className="mt-3 max-w-[80ch] text-caption text-ink-light">
+          The loop proposes hypotheses, backtests each one on the frozen DISCOVERY partition, and
+          passes it to the gate. Nothing is promoted on a hunch — a hypothesis clears the gate or
+          it is killed, and both outcomes are written to the decision log.
+        </p>
+      ) : null}
+    </section>
+  );
+}

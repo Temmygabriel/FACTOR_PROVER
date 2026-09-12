@@ -18,11 +18,11 @@
  */
 
 import type {
-  ChainVerification,
   ControlResponse,
   LeaderboardResponse,
   LogResponse,
   StatusResponse,
+  VerifyResponse,
 } from './types';
 
 export const API_BASE_URL = (
@@ -204,7 +204,7 @@ export const getLog = (
 };
 
 export const verifyChain = (signal?: AbortSignal) =>
-  request<ChainVerification>('/api/log/verify', { signal });
+  request<VerifyResponse>('/api/log/verify', { signal });
 
 /**
  * The one write this app performs. `requested_by` is required by the contract

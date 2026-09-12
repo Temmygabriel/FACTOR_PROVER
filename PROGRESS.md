@@ -32,7 +32,9 @@
 | Frontend production build | **Verified — `next build` compiled; 4 routes, 6 static pages generated** |
 | Frozen dataset integrity job | **Green — every file re-hashed against the committed manifest on every push** |
 | Render backend deploy | **Live and verified — `https://factor-prover-agent.onrender.com`** |
-| Vercel deploy | **Ready — this is the next step** |
+| Vercel deploy | **Live — `NEXT_PUBLIC_API_BASE_URL` set at project creation** |
+| UI redesign brief (8 changes) | **6 of 7 implementable changes done; Change 8 has no target route** |
+| Committed demo run | **NOT DONE — and now the top risk. See finding 30.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
 `factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
@@ -486,6 +488,63 @@ talk to this backend until `WEB_ORIGIN` names it.
 
 ---
 
+## UI redesign brief (2026-09-12)
+
+`factor_prover_ui_redesign_brief.md`, 8 changes, all implemented except Change 8.
+
+| # | Change | State |
+|---|---|---|
+| 1 | Orientation strip | **Done** — `components/OrientationStrip.tsx`, rendered from `NavBar` |
+| 2 | Plain-English hypothesis sentence | **Done** — `hypothesisQuestion` + `barItMustClear` in `lib/copy.ts` |
+| 3 | Plain-English kill line + expander | **Done** — `killSentences` / `killReasonTechnical` / `TechnicalDisclosure` |
+| 4 | Leaderboard ratio + bar | **Done** — `BenchRatio` in `app/leaderboard/page.tsx` |
+| 5 | Empty state with Start button | **Done** — `components/EmptyBench.tsx` |
+| 6 | Nav score counter | **Done** — `NavBar` |
+| 7 | Log chain banner, verify on mount | **Done** — `app/log/page.tsx` |
+| 8 | Factor detail frame | **Skipped** — targets `app/factors/[id]/page.tsx`, which does not exist |
+
+**Seven places the brief and the real codebase disagree.** Each was resolved in
+favour of the code, and each is recorded in the file it touches:
+
+1. **"Bitget API connected" pre-flight row** — no endpoint reports it. A tick
+   beside a check nothing computed is the one thing this product cannot print, so
+   the row was dropped and the hypothesis-generator row (which is real) replaced
+   it. `EmptyBench.tsx`.
+2. **`SIGNAL_LABELS` maps `btc_funding_rate` to "funding rate spike"** — a spike
+   is a *change*, and `gt 0.00005` is a *level*: the funding rate being positive
+   and above a floor at the moment of measurement. Calling it a spike would put a
+   claim in the question the backtest never made. `pct_change_gt` gets the change
+   wording and the spike belongs to it. `lib/copy.ts`.
+3. **"tested" in the brief's counters** — `hypotheses_attempted` is incremented
+   *before* the schema wall (`session/loop.ts:368` vs `:396`), so it includes
+   proposals the wall stopped before any backtest. A proposal that was never
+   backtested was not tested. The UI says "attempted", matching the field.
+4. **`postStart` does not exist** — `lib/api.ts` has `postResume` (→ `/api/start`)
+   and `postPause` (→ `/api/stop`). Used as they are.
+5. **Equal weight means the expander is on PROMOTED too** — the brief asks for
+   "What does this mean?" on the KILL stamp. Gating it on the verdict would hand
+   one outcome a depth the other does not have.
+6. **"All of them died at the Benjamini-Hochberg correction"** (spec §9, not the
+   brief) is **false**. A 361-entry run on the deployed instance recorded
+   ic_below_floor 112, t_stat_below_floor 100, duplicate_family 99,
+   insufficient_obs 48, **p_value_exceeds_bh_threshold 11**, baseline_not_beaten
+   2. Eleven of 361 died at BH. The copy now names BH as one of five bars rather
+   than as the cause of every kill. `lib/copy.ts`.
+7. **"At 43 hypotheses tested, the bar has tightened"** — the number the brief
+   shows is the *session's* rank-1 bar, but a decided row has its own bar
+   (`(rank/m)·fdr`) and the stamp directly above prints it. Quoting the rank-1 bar
+   in the card would put two different thresholds under one label on one screen,
+   so the card quotes the row's own bar when one exists and says which it is.
+
+**A probe, not a vibe.** `probe.mjs` (scratch, gitignored) asserts the exact
+sentences with the exact numbers: **52 assertions, 0 failures**. It was proved to
+have teeth twice — forcing the card to quote the rank-1 bar failed exactly the 2
+assertions that claim otherwise, and deleting the placeholder-metrics guard failed
+exactly the 2 that claim that. The unit trap (0.00005 is 0.005%, not 0.00005%) has
+its own 4 assertions, because a wrong unit renders as plausible prose.
+
+---
+
 ## Next actions
 
 1. ~~Finish the frozen dataset prefetch~~ — **done**, 33 files verified.
@@ -541,6 +600,35 @@ talk to this backend until `WEB_ORIGIN` names it.
     committed `logs/decisions.jsonl` with genuine verdicts, and the numbers in the README and
     demo script replaced with that run's real output. Spec §16's example numbers are
     mathematically impossible (finding 7) and must not survive into the submission.
+18. **Type-check the redesign in CI.** `lib/copy.ts` is covered by a local probe, but Node
+    cannot parse `.tsx` (`ERR_UNKNOWN_FILE_EXTENSION`), so the 4 components the redesign
+    touched have never been compiled. The push is the check. See finding 28.
+
+---
+
+## Findings from the redesign pass (2026-09-12)
+
+28. **The free tier has no persistent disk, and it has already eaten a session.**
+    `/api/status` now reports `phase: idle`, `hypotheses_attempted: 0` — the 361-entry run
+    that produced finding 6's distribution is gone, and so is its `decisions.jsonl`. This is
+    not a bug in the agent; it is Render's free tier, which sleeps an idle service and resets
+    the container filesystem on wake. Two consequences, one of which is a submission risk:
+    - `/api/log/verify` correctly answers `unavailable_reason: "no decision log at
+      logs/decisions.jsonl yet"` rather than claiming an intact chain over nothing. The log
+      screen's banner handles exactly this state, which is why Change 7 turned out to matter
+      more than it looked.
+    - **A judge who opens the URL after any idle period sees an empty product**, however good
+      the UI is. The structural fix is action 17: commit a real run's `decisions.jsonl`, so
+      the record survives the container. Until then the empty state is doing the work of
+      explaining a product that has no results on screen.
+29. **`ADMIN_TOKEN` must stay unset on Render.** With it set, `POST /api/start|stop|reset`
+    require an `x-admin-token` header and both the empty state's Start button and the
+    header's Pause/Resume break. Verified: `POST /api/start` answers 200 unauthenticated.
+30. **Three source comments in the frontend overstate what the code does** — `nullResultCopy`
+    was one (fixed above), and two more were reported earlier and are still open: the
+    `spotReturnSeries` doc comment claiming it "returns NaN" when the body `continue`s, and
+    `guard.ts` CHECK 5's `detail` string. Comments that become lies after one edit are the
+    cheapest kind of dishonesty to fix and the easiest to leave.
 
 ---
 
@@ -668,3 +756,40 @@ talk to this backend until `WEB_ORIGIN` names it.
   Also corrected in this pass: next action 11 had claimed the decision log was committed. It
   is not — `apps/agent/logs/` is empty. The frozen dataset is committed and the recorded
   session is not, which is action 17.
+
+- **2026-09-12 (redesign)** — **The UI redesign brief implemented: 7 of 8 changes; the 8th has
+  no target route.** The brief's own goal was that a judge who has never heard of Factor Prover
+  understands within 30 seconds what it is, what it is doing live, and why the KILL is the
+  point. Every sentence the redesign adds is a template over fields the server actually sent —
+  nothing is authored prose, and `lib/copy.ts` is the single home for all of it.
+
+  The largest single piece of work was not layout, it was **units**. The log stores a condition
+  as a bare number and the same number means different things per signal: a funding rate of
+  `0.00005` is `0.005%`, while a spot return of `0.5` is already `0.5%`. Rendering one with the
+  other's unit overstates it a hundredfold and the sentence still reads as perfectly plausible.
+  So the unit is looked up per signal, an unknown signal gets **no** unit rather than a guessed
+  one, and the trap has its own four assertions in the probe.
+
+  Seven disagreements with the brief and with spec §9 were found and resolved in favour of the
+  code; the table and the list are in "UI redesign brief" above. The one worth repeating here
+  is that spec §9's null-result copy — "All of them died at the Benjamini-Hochberg correction"
+  — is **false**, and the run that disproved it recorded 11 BH kills out of 361. A sentence on
+  the leaderboard that the log beside it contradicts overstates the product's rigour in exactly
+  the direction the whole submission is built to avoid, so the copy now names BH as one of five
+  bars rather than as the cause of every kill.
+
+  Also corrected: `fmtThreshold` printed four decimals below 0.01, at which precision the live
+  session's bar (0.000277) and a raw p (0.000510) both rendered "0.0005" — producing kills that
+  read "p 0.0005 did not survive the bar (0.0005)". It now prints six below 0.01.
+
+  Verified by `probe.mjs`: **52 assertions, 0 failures**, and proved to have teeth by mutation
+  twice. What is **not** verified locally is the four `.tsx` files — Node cannot parse JSX, so
+  the components the redesign touched have never been compiled. The push is the check (finding
+  28).
+
+  **The risk this pass surfaced is bigger than the redesign.** `/api/status` answered `phase:
+  idle`, `hypotheses_attempted: 0`: Render's free tier has no persistent disk, slept, and reset
+  the container — taking the 361-entry session and its `decisions.jsonl` with it. A judge who
+  opens the URL after any idle period now sees an empty product, however good the empty state
+  is. The structural fix is action 17, and it has moved from housekeeping to the top of the
+  list: **commit a real run's `decisions.jsonl`**.

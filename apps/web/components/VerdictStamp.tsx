@@ -40,6 +40,12 @@
  *     clear the bar". The first failing row is therefore the reason named on the
  *     second line, and a reader can see the reason being derived instead of
  *     being told it.
+ *
+ *  6. The reason is a plain sentence, and the code behind it is one click away.
+ *     `killSentences` in lib/copy.ts turns a reason code and the row's own
+ *     numbers into English — "p 0.0312 did not survive the multiple-testing bar
+ *     (0.001385)" — and `technical` carries the same row raw and signed, behind
+ *     a disclosure offered on every verdict rather than on kills alone.
  */
 
 import { CHECK_ROWS, VERDICT_MEANING } from '@/lib/copy';
@@ -51,12 +57,25 @@ import { VERDICT_TONE } from '@/lib/verdict';
 
 export interface VerdictStampProps {
   verdict: Verdict;
-  /** Second line, plain language. Falls back to the verdict's definition. */
-  reason?: string | null;
+  /**
+   * Second line, plain language. Falls back to the verdict's definition.
+   *
+   * An array renders one paragraph per sentence, which is what `killSentences`
+   * produces: a statement of what the gate measured and a statement of what that
+   * means. Passed as an array rather than as one pre-joined string so the two
+   * read as two thoughts instead of one long one.
+   */
+  reason?: string | string[] | null;
   /** The evidence the gate saw. Omitted only where the wire format has none. */
   metrics?: DecisionMetrics | null;
   /** Which of the five bars this hypothesis passed. */
   checks?: GateChecks | null;
+  /**
+   * Raw, signed figures for the "What does this mean?" disclosure. Supplied by
+   * the caller from the row it already holds; empty or absent for a row whose
+   * metrics are placeholders (`killReasonTechnical` returns `[]` there).
+   */
+  technical?: string[] | null;
   size: 'large' | 'small';
   /**
    * Animates the stamp in once: 0.85 -> 1.0 over 180ms, ease-out, no bounce.
@@ -140,11 +159,48 @@ function checkRows(metrics: DecisionMetrics, checks: GateChecks): CheckRowView[]
   return CHECK_ORDER.map((key) => views[key]);
 }
 
+/**
+ * The "What does this mean?" disclosure.
+ *
+ * A native `<details>`, not a React state toggle, for three reasons that all
+ * matter here: it works with keyboard and screen readers without a line of ARIA,
+ * it survives the stamp being re-rendered by a poll, and it costs no client
+ * state in a component that is rendered inside a table of hundreds of rows.
+ *
+ * It is exported because the log screen's full variant shows the same detail
+ * outside a stamp. One component, so the two cannot drift into describing the
+ * same row differently.
+ *
+ * The colour is inherited rather than set: inside a stamp it takes the verdict's
+ * own tone, exactly like every other element in there, and outside one it takes
+ * whatever the surrounding text is.
+ */
+export function TechnicalDisclosure({ lines }: { lines: string[] }) {
+  // Self-guarding rather than trusting every caller to check: an empty
+  // disclosure renders a "What does this mean?" heading over nothing, which
+  // looks like a panel that failed to load. `killReasonTechnical` returns `[]`
+  // for the rows this matters for, so the check belongs here where it cannot be
+  // forgotten.
+  if (lines.length === 0) return null;
+
+  return (
+    <details className="mt-3 border-t border-current pt-3">
+      <summary className="cursor-pointer text-label">What does this mean?</summary>
+      <div className="mt-2 flex flex-col gap-1 font-mono text-label">
+        {lines.map((line, index) => (
+          <p key={index}>{line}</p>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export function VerdictStamp({
   verdict,
   reason,
   metrics,
   checks,
+  technical,
   size,
   animate = false,
 }: VerdictStampProps) {
@@ -161,7 +217,19 @@ export function VerdictStamp({
 
   const rows = metrics && checks ? checkRows(metrics, checks) : null;
   const met = rows ? rows.filter((row) => row.met).length : 0;
-  const secondLine = reason ?? VERDICT_MEANING[verdict];
+
+  /*
+   * Normalised to at least one line. An empty array from `killSentences` — a
+   * CIRCUIT_BREAK row, or a kill with no reason recorded — falls back to the
+   * verdict's own definition rather than leaving the slot empty, which is the
+   * same rule as a null reason and keeps a halt from rendering thinner than a
+   * kill.
+   */
+  const supplied = (Array.isArray(reason) ? reason : [reason]).filter(
+    (line): line is string => typeof line === 'string' && line.trim().length > 0,
+  );
+  const secondLines = supplied.length > 0 ? supplied : [VERDICT_MEANING[verdict]];
+  const detail = technical && technical.length > 0 ? technical : null;
 
   return (
     <div
@@ -170,7 +238,11 @@ export function VerdictStamp({
       }`}
     >
       <div className={geometry.label}>{verdict}</div>
-      <p className={geometry.reason}>{secondLine}</p>
+      {secondLines.map((line, index) => (
+        <p key={index} className={geometry.reason}>
+          {line}
+        </p>
+      ))}
 
       {rows ? (
         <div className="mt-5 border-t border-current pt-3">
@@ -195,6 +267,16 @@ export function VerdictStamp({
           </div>
         </div>
       ) : null}
+
+      {/*
+        The disclosure, offered on a promote exactly as on a kill. The brief asks
+        for it on the KILL stamp; gating it on the verdict would hand one outcome
+        a depth the other does not have, which is the same bias the rest of this
+        file exists to remove, just pointed the other way. It is also the honest
+        placement: a reader who wants to check that a promotion's numbers are
+        real needs this more than a reader looking at a kill does.
+      */}
+      {detail ? <TechnicalDisclosure lines={detail} /> : null}
     </div>
   );
 }

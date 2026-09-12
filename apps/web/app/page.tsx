@@ -26,6 +26,7 @@ import { BackendNotice, StaleNotice } from '@/components/BackendNotice';
 import { Button } from '@/components/Button';
 import { CircuitBreakerPanel, type ResetOutcome } from '@/components/CircuitBreakerPanel';
 import { DecisionLog } from '@/components/DecisionLog';
+import { EmptyBench } from '@/components/EmptyBench';
 import { HypothesisPanel } from '@/components/HypothesisPanel';
 import { LiveFeed } from '@/components/LiveFeed';
 import { Panel } from '@/components/Panel';
@@ -89,6 +90,17 @@ export default function LoopPage() {
   const statusData = status.data;
   const phase = statusData?.phase ?? null;
   const running = phase === 'running' && current.hypothesis !== null && current.entry === null;
+
+  /*
+   * Nothing has been attempted, so there is nothing to render a verdict about.
+   * Keyed on the attempt count rather than on an empty log because the log and
+   * the count can arrive at different moments, and the count is the one that
+   * says whether the bench has done any work.
+   *
+   * This is the state a cold visitor meets most often: the deployed agent runs
+   * on a free tier that sleeps when idle and loses its session when it wakes.
+   */
+  const isEmpty = statusData !== null && statusData.stats.hypotheses_attempted === 0;
 
   const [control, setControl] = useState<{ pending: boolean; text: string | null }>({
     pending: false,
@@ -212,7 +224,23 @@ export default function LoopPage() {
         </div>
       </section>
 
-      {control.text ? <p className="text-label text-ink">{control.text}</p> : null}
+      {/*
+        Before the provenance panel, deliberately. On a session with no
+        hypotheses the first question is "what is this and can I start it", and
+        the provenance block answers a question the reader has not asked yet.
+        `onStart` is `toggleLoop`: from any phase but `running` it POSTs
+        /api/start, which is the same server call that resumes a paused loop.
+      */}
+      {isEmpty && statusData ? (
+        <EmptyBench
+          status={statusData}
+          onStart={toggleLoop}
+          pending={control.pending}
+          message={control.text}
+        />
+      ) : null}
+
+      {control.text && !isEmpty ? <p className="text-label text-ink">{control.text}</p> : null}
 
       {statusData ? (
         <ProvenancePanel provenance={statusData.provenance} />
@@ -227,20 +255,27 @@ export default function LoopPage() {
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <HypothesisPanel
-          // `?? null` because the panel's contract is explicit — null means "no
-          // hypothesis in flight" — while the live state is `undefined` until the
-          // first stream event arrives. The two are the same thing to this panel
-          // (`phase` is what distinguishes an idle loop from a running one), and
-          // normalising here keeps the component's prop type honest rather than
-          // widening it to accept a case it does not reason about.
-          hypothesis={current.hypothesis ?? null}
-          hypothesisId={current.hypothesisId}
-          generator={current.generator}
-          metrics={current.metrics}
-          entry={current.entry}
-          phase={phase}
-        />
+        {/* The orientation strip's "watch it happen live" anchor lands here. */}
+        <div id="live-hypothesis">
+          <HypothesisPanel
+            // `?? null` because the panel's contract is explicit — null means "no
+            // hypothesis in flight" — while the live state is `undefined` until the
+            // first stream event arrives. The two are the same thing to this panel
+            // (`phase` is what distinguishes an idle loop from a running one), and
+            // normalising here keeps the component's prop type honest rather than
+            // widening it to accept a case it does not reason about.
+            hypothesis={current.hypothesis ?? null}
+            hypothesisId={current.hypothesisId}
+            generator={current.generator}
+            metrics={current.metrics}
+            entry={current.entry}
+            phase={phase}
+            // The card's "bar it must clear" section reads the family size and
+            // the session's rank-1 threshold from here. Same reading the header
+            // above uses, so the two cannot disagree about the same instant.
+            stats={statusData?.stats ?? null}
+          />
+        </div>
 
         <div className="flex flex-col gap-6">
           {statusData ? (

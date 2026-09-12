@@ -21,7 +21,7 @@ import { Panel } from '@/components/Panel';
 import { COLUMN_TIPS, SIGNAL_PLAIN, VERDICT_MEANING } from '@/lib/copy';
 import { fmtDateUtc, fmtInt } from '@/lib/format';
 import { getLeaderboard, getLog, getStatus, isAborted } from '@/lib/api';
-import type { DecisionRow } from '@/lib/types';
+import type { DecisionRow, SessionStats } from '@/lib/types';
 import { useResource } from '@/lib/useResource';
 
 /** Kills shown before the reader asks for the rest. */
@@ -31,6 +31,91 @@ const MAX_KILL_PAGES = 10;
 
 function isKillRow(row: DecisionRow): boolean {
   return row.decision !== 'PROMOTE' && row.decision !== 'CIRCUIT_BREAK';
+}
+
+/** A figure inside a sentence: mono, like every other number on the page. */
+function Figure({ value }: { value: number }) {
+  return <span className="font-mono">{fmtInt(value)}</span>;
+}
+
+/**
+ * The session's headline ratio, above both tables.
+ *
+ * A session that promotes one hypothesis out of forty-three leaves the promoted
+ * table nearly empty, and a near-empty table is read as work that did not
+ * happen. The ratio IS the result, so it is stated first, in the session's own
+ * counts.
+ *
+ * It renders here rather than inside FactorLeaderboard because that component
+ * mounts only once GET /api/leaderboard answers, and the moment a reader most
+ * needs the ratio is the moment the tables are not there. For the same reason
+ * the counts come from the status reading rather than from the counters the
+ * tables fall back to: those fall back to the log so the tables can render
+ * early, and a log-derived total must not be printed up here as a session total.
+ * With no status reading the block keeps its place and states that, rather than
+ * filling in a number from somewhere else.
+ */
+function BenchRatio({ stats }: { stats: SessionStats | null }) {
+  if (!stats) {
+    return (
+      <section className="border border-rule bg-surface px-4 py-3">
+        <p className="text-heading font-semibold text-ink">
+          No reading from the session counters yet.
+        </p>
+        <p className="mt-1 max-w-[80ch] text-label text-ink-light">
+          The counts and the ratio bar appear once GET /api/status answers. Nothing here is
+          estimated.
+        </p>
+      </section>
+    );
+  }
+
+  const {
+    hypotheses_attempted: attempted,
+    hypotheses_killed: killed,
+    hypotheses_promoted: promoted,
+  } = stats;
+
+  // The agent computes killed as attempted minus promoted, so this denominator
+  // is the whole bench and the two segments cover the track exactly.
+  const judged = promoted + killed;
+  const killedShare = judged > 0 ? (killed / judged) * 100 : 0;
+
+  return (
+    <section className="border border-rule bg-surface px-4 py-3">
+      <p className="text-heading text-ink">
+        <Figure value={attempted} />{' '}
+        {attempted === 1 ? 'hypothesis' : 'hypotheses'} entered the bench.
+      </p>
+      <p className="mt-1 text-heading text-ink">
+        <Figure value={killed} /> {killed === 1 ? 'was' : 'were'} killed.{' '}
+        <Figure value={promoted} /> cleared the bar.
+      </p>
+
+      {judged > 0 ? (
+        <div
+          role="img"
+          aria-label={`${fmtInt(killed)} killed, ${fmtInt(promoted)} promoted, of ${fmtInt(
+            judged,
+          )} judged`}
+          className="mt-3 flex h-2 w-full border border-rule"
+        >
+          {/*
+            Inline widths because the proportions exist only at runtime and a
+            Tailwind width class has to be known at build time — same idiom as
+            the circuit-breaker meters. The promoted segment is the remainder
+            rather than a figure of its own, so the two always cover the track
+            exactly. It is honestly this narrow: padding it to read better would
+            be the one dishonest mark on the page.
+          */}
+          <div className="h-full bg-killed" style={{ width: `${killedShare}%` }} />
+          <div className="h-full bg-promoted" style={{ width: `${100 - killedShare}%` }} />
+        </div>
+      ) : null}
+
+      <p className="mt-4 max-w-[80ch] text-label text-ink">That ratio is the product working.</p>
+    </section>
+  );
 }
 
 export default function LeaderboardPage() {
@@ -112,6 +197,8 @@ export default function LeaderboardPage() {
           )}
         </p>
       </section>
+
+      <BenchRatio stats={statusData?.stats ?? null} />
 
       {log.stale ? (
         <StaleNotice failure={log.failure} readAt={log.readAt} onRetry={log.reload} />

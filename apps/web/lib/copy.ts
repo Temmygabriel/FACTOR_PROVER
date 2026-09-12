@@ -15,20 +15,29 @@
 
 import type { KillReason } from './types';
 import type { Verdict } from './verdict';
+import { hasGateEvidence } from './verdict';
+import type { DecisionRow, HypothesisShape, SessionStats } from './types';
+import { ABSENT, fmt, fmtIc, fmtInt, fmtT, fmtThreshold, targetLabel } from './format';
+import { PRESCRIBED } from './policy';
 
 /**
  * Why an entry was killed, in one sentence a reader outside the project can
  * follow. The floors quoted are the preregistered ones (gate_policy.json v1.0)
  * and the same constants are rendered as the bar in the stamp, so the sentence
  * and the check row cannot disagree.
+ *
+ * The floors are interpolated from `PRESCRIBED` rather than typed into the
+ * prose. They were typed in once, and that is one policy edit away from a
+ * sentence that quotes a floor the gate was not using — the sort of quiet
+ * disagreement between the label and the check that this product exists to make
+ * impossible.
  */
 export const KILL_REASON_PLAIN: Record<KillReason, string> = {
-  insufficient_obs:
-    'fewer than 100 valid observations — too few to test, so the gate killed it on the evidence available rather than on the idea',
-  ic_below_floor:
-    'the correlation was weaker than the preregistered floor of 0.04, so the signal did not move with the forward return',
-  t_stat_below_floor:
-    'the t-statistic was below the preregistered floor of 2.0, so at this sample size the result is not distinguishable from chance',
+  insufficient_obs: `fewer than ${PRESCRIBED.min_obs} valid observations — too few to test, so the gate killed it on the evidence available rather than on the idea`,
+  ic_below_floor: `the correlation was weaker than the preregistered floor of ${PRESCRIBED.min_ic}, so the signal did not move with the forward return`,
+  t_stat_below_floor: `the t-statistic was below the preregistered floor of ${PRESCRIBED.min_t_stat.toFixed(
+    1,
+  )}, so at this sample size the result is not distinguishable from chance`,
   baseline_not_beaten:
     'the factor did not outperform a naive baseline that uses the previous period’s return as the signal',
   p_value_exceeds_bh_threshold:
@@ -160,18 +169,455 @@ export const TAGLINE =
   'Factor Prover tests cross-asset hypotheses against Bitget market data and issues a verdict on each one. It shows every kill.';
 
 /**
- * The null-result framing from spec §9, used when the session has promoted
- * nothing. The counts are filled by the caller; this is not a fallback, it is
- * the honest statement a zero-promote session should make.
+ * The null-result framing, used when the session has promoted nothing.
+ *
+ * THE SPEC'S SECOND SENTENCE IS FALSE, AND OUR OWN LOG PROVED IT. Design spec
+ * §9 reads: "[N] hypotheses tested. [N] did not survive the Benjamini-Hochberg
+ * correction applied across all [N] tests at FDR level 0.10." That is true only
+ * if every kill is a BH kill. A 361-entry run on the deployed instance — since
+ * lost, because the free tier has no persistent disk — recorded this reason
+ * distribution: ic_below_floor 112, t_stat_below_floor 100, duplicate_family 99,
+ * insufficient_obs 48, p_value_exceeds_bh_threshold 11, baseline_not_beaten 2.
+ * Eleven of three hundred and sixty-one died at BH; the other 350 died at one of
+ * the four earlier bars.
+ *
+ * That matters more here than a copy quibble usually would. This sentence sits
+ * on the leaderboard beside the log that contradicts it, and a judge who counts
+ * finds the product overstating its own rigour in the exact direction the whole
+ * submission is built to avoid. So the structure and the voice of the spec's
+ * copy are kept and the one claim is corrected: the five bars are enumerated and
+ * BH is named as one of them rather than as the cause.
+ *
+ * The alternative — deriving the real distribution and naming the largest bucket
+ * — needs per-reason counts on the wire, which `SessionStats` does not carry.
+ * Until it does, this says the true thing generically rather than the false
+ * thing specifically.
  */
 export function nullResultCopy(attempted: number, fdrLevel: number): string[] {
+  const n = fmtInt(attempted);
+  const singular = attempted === 1;
   return [
     'No factors promoted in this session.',
-    `${attempted} ${
-      attempted === 1 ? 'hypothesis was' : 'hypotheses were'
-    } tested. All of them died at the Benjamini-Hochberg correction applied across all ${attempted} tests at FDR level ${fdrLevel.toFixed(
+    `${n} ${singular ? 'hypothesis was' : 'hypotheses were'} attempted. ${
+      singular ? 'It failed' : 'Each failed'
+    } at least one of the five preregistered bars: too few observations, an IC below its floor, a t-statistic below its floor, a baseline that already did as well, or the Benjamini-Hochberg correction at FDR ${fdrLevel.toFixed(
       2,
-    )}.`,
+    )} applied across all ${n} tests at once.`,
     'This is a result. A factor miner that promotes everything is broken. The gate is working.',
   ];
+}
+
+// ---------------------------------------------------------------------------
+// The orientation layer — changes 1, 2, 3, 5 and 6 of the UI redesign brief
+// ---------------------------------------------------------------------------
+//
+// Everything below turns numbers the server actually sent into a sentence. None
+// of it is authored text: each is a template over recorded fields, so a sentence
+// cannot say something the log does not support. That is the reason the
+// sentences live in this file rather than inline in a component, where the
+// temptation is to reach for a phrase nicer than the data warrants.
+//
+// UNITS ARE THE ONE THING TO GET RIGHT. The log stores a condition as a bare
+// number, and the same number means different things per signal: a funding rate
+// of 0.00005 is 0.005%, while a spot return of 0.5 is already 0.5%. Rendering
+// one with the other's unit overstates it by 100x. So the unit is looked up per
+// signal, and a signal this file has not been told about gets NO unit rather
+// than a guessed one — an unlabelled number is a smaller error than a wrong
+// label, and it is visible to a reader in a way a wrong unit is not.
+
+/**
+ * What a condition's `threshold` is measured in, per signal.
+ *
+ * `rate` is a decimal funding rate, so 0.00005 prints as 0.005%.
+ * `percent` is already a percentage, so 0.5 prints as 0.5%.
+ *
+ * `btc_funding_x_spot` is a rate for the same reason the plain funding signals
+ * are: it is a conjunction of funding and spot conditions whose threshold binds
+ * to the funding leg, and `family.ts` refuses `pct_change_*` operators on it for
+ * exactly that reason — a level-valued signal cannot carry a change operator.
+ */
+const SIGNAL_UNIT: Record<string, 'rate' | 'percent'> = {
+  btc_funding_rate: 'rate',
+  eth_funding_rate: 'rate',
+  btc_funding_x_spot: 'rate',
+  btc_spot_return: 'percent',
+  eth_spot_return: 'percent',
+};
+
+/**
+ * The noun the question uses for a signal, in two forms.
+ *
+ * `full` is for a level condition — "a BTC price move above 0.5%" — and `bare`
+ * is for a change condition, because "a BTC price move rising more than 0.5%"
+ * says move twice. The operator decides which is used, in `hypothesisQuestion`.
+ *
+ * These are deliberately NOT the `SIGNAL_LABELS` in the redesign brief. The
+ * brief labels `btc_funding_rate` a "funding rate spike", and a spike is not
+ * what the condition tests: `gt 0.005%` is a level — the funding rate being
+ * positive and above a floor at the moment of measurement. Calling it a spike
+ * would put a claim in the question that the backtest never made. The word
+ * "spike" belongs to a change operator, and there is a `pct_change_gt` form
+ * that means exactly that and gets its own wording below.
+ */
+const SIGNAL_NOUN: Record<string, { bare: string; full: string }> = {
+  btc_funding_rate: { bare: 'BTC funding rate', full: 'BTC funding rate' },
+  eth_funding_rate: { bare: 'ETH funding rate', full: 'ETH funding rate' },
+  btc_spot_return: { bare: 'BTC price', full: 'BTC price move' },
+  eth_spot_return: { bare: 'ETH price', full: 'ETH price move' },
+  btc_funding_x_spot: { bare: 'BTC funding', full: 'BTC funding rate together with a BTC price move' },
+};
+
+/**
+ * A percentage for prose: enough decimals to be true, trailing zeros dropped.
+ *
+ * `fmt` takes a fixed decimal count because it serves the metrics table, where a
+ * column of numbers has to line up. In a sentence a fixed count reads as false
+ * precision — "above 0.00500%" claims two digits more than the threshold holds.
+ */
+function pct(value: number): string {
+  if (!Number.isFinite(value)) return ABSENT;
+  if (value === 0) return '0%';
+  const decimals = Math.abs(value) >= 0.001 ? 3 : 6;
+  const trimmed = value
+    .toFixed(decimals)
+    .replace(/0+$/, '')
+    .replace(/\.$/, '');
+  return `${trimmed}%`;
+}
+
+/**
+ * The condition as a phrase that attaches to a signal noun.
+ *
+ * An operator this file has not seen renders as itself beside its own number,
+ * with no unit: inventing a wording for an operator would be inventing a
+ * meaning, and the raw form at least tells a reader what the log says.
+ */
+function conditionPlain(
+  signal: string,
+  condition: { operator: string; threshold: number },
+): string {
+  const unit = SIGNAL_UNIT[signal];
+  const level = (v: number) =>
+    unit === 'rate' ? pct(v * 100) : unit === 'percent' ? pct(v) : String(v);
+
+  switch (condition.operator) {
+    case 'gt':
+      return `above ${level(condition.threshold)}`;
+    case 'gte':
+      return `at or above ${level(condition.threshold)}`;
+    case 'lt':
+      return `below ${level(condition.threshold)}`;
+    case 'lte':
+      return `at or below ${level(condition.threshold)}`;
+    case 'pct_change_gt':
+      return `rising more than ${pct(condition.threshold)}`;
+    // `lt` on a change is a fall, and the threshold is negative in that reading;
+    // the absolute value is what the phrase "more than" needs.
+    case 'pct_change_lt':
+      return `falling more than ${pct(Math.abs(condition.threshold))}`;
+    default:
+      return `${condition.operator.replace(/_/g, ' ')} ${condition.threshold}`;
+  }
+}
+
+/**
+ * A window length as prose. "60 minutes", not "60m".
+ *
+ * `fmtWindow` is the compact form and is right everywhere a window sits in a
+ * column or beside a unit. Inside a sentence it reads as a unit label rather
+ * than as English, and this sentence is the one a reader meets first.
+ */
+function windowProse(minutes: number): string {
+  if (!Number.isFinite(minutes)) return ABSENT;
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  const hours = minutes / 60;
+  if (Number.isInteger(hours)) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  return `${hours.toFixed(1)} hours`;
+}
+
+/**
+ * The hypothesis as a question a reader outside the project can answer.
+ *
+ * Built from the structured fields at render time, never from the generator's
+ * own prose. That matters beyond the usual "do not trust the LLM" reflex: the
+ * sentence is the product's claim about what it tested, and it has to be a
+ * function of the same fields the backtest was run on. If it were free text, a
+ * proposal could describe itself as testing one thing while the engine tested
+ * another, and the log would carry both.
+ *
+ * Returns null when there is no hypothesis to describe — a CIRCUIT_BREAK or
+ * schema-killed row, where the caller should say what happened instead of
+ * showing an empty question.
+ */
+export function hypothesisQuestion(
+  hypothesis: HypothesisShape | null | undefined,
+): string | null {
+  if (!hypothesis || !hypothesis.condition) return null;
+  const condition = hypothesis.condition;
+  if (typeof condition.operator !== 'string' || !Number.isFinite(condition.threshold)) {
+    return null;
+  }
+  // Same guard for the window: a question that reads "over the next NaN minutes"
+  // is worse than no question, because it looks like data.
+  if (!Number.isFinite(hypothesis.forward_return_minutes)) return null;
+
+  const noun = SIGNAL_NOUN[hypothesis.signal];
+  const isChange = condition.operator.startsWith('pct_change_');
+  const subject = noun
+    ? isChange
+      ? noun.bare
+      : noun.full
+    : hypothesis.signal.replace(/_/g, ' ');
+  const direction = hypothesis.direction === 'negative' ? 'fall' : 'rise';
+
+  return (
+    `Does a ${subject} ${conditionPlain(hypothesis.signal, condition)} ` +
+    `predict a ${targetLabel(hypothesis.target)} price ${direction} ` +
+    `over the next ${windowProse(hypothesis.forward_return_minutes)}?`
+  );
+}
+
+/**
+ * The bar the gate is applying, for the hypothesis card.
+ *
+ * TWO DIFFERENT NUMBERS, AND THE CARD SAYS WHICH ONE IT IS SHOWING.
+ *
+ * A hypothesis's own bar is `(rank / m) * fdr`, and the rank-1 bar the server
+ * reports as `current_bh_threshold_rank1` is `fdr / m` — the strictest bar in
+ * the session. For a hypothesis still in flight the rank is not known until the
+ * family is ranked, so the rank-1 bar is the only one that can be quoted, and
+ * the caption says that. For a decided row the row's own bar IS known, from
+ * `metrics.bh_adjusted_threshold`, so that is quoted instead — and it is quoted
+ * because the stamp directly above this section prints that same number on its
+ * `passed_bh` line. Showing the rank-1 bar here would put two different
+ * thresholds under one label on one screen, which is the reader-visible version
+ * of a bug.
+ *
+ * Returns null when there is no family to correct for — no threshold, or a
+ * session that has attempted nothing. The section then does not render, rather
+ * than rendering a bar for zero tests.
+ */
+export interface BarStatement {
+  /** The threshold to print, formatted. */
+  value: string;
+  /** What that number is, so a reader is never misled about which bar it is. */
+  caption: string;
+  /** Why the bar is where it is. */
+  lines: string[];
+}
+
+export function barItMustClear(opts: {
+  attempted: number;
+  /** The session's rank-1 reading. Null when status has not answered. */
+  rank1Threshold: number | null;
+  /** The bar this particular row was judged against, when a verdict exists. */
+  ownThreshold?: number | null;
+}): BarStatement | null {
+  const { attempted, rank1Threshold, ownThreshold = null } = opts;
+  if (!Number.isFinite(attempted) || attempted <= 0) return null;
+
+  const own =
+    ownThreshold !== null && Number.isFinite(ownThreshold) ? ownThreshold : null;
+  // Null rather than NaN or a guess: the rank-1 reading is absent whenever
+  // /api/status has not answered, and a decided row still has its own bar.
+  const rank1 =
+    rank1Threshold !== null && Number.isFinite(rank1Threshold) ? rank1Threshold : null;
+
+  const many = attempted === 1 ? 'hypothesis has' : 'hypotheses have';
+  const familyLine =
+    `${fmtInt(attempted)} ${many} been attempted this session. The gate corrects for all of ` +
+    `them at once, so the more that are attempted, the harder any one of them is to clear.`;
+
+  if (own !== null) {
+    // The rank-1 bar is printed only when it is genuinely a different number, so
+    // the section never shows one threshold twice under two captions.
+    const differs = rank1 !== null && Math.abs(own - rank1) > 1e-12;
+    return {
+      value: fmtThreshold(own),
+      caption: 'the bar this hypothesis was judged against',
+      lines:
+        differs && rank1 !== null
+          ? [
+              familyLine,
+              `The strictest bar in the session, at rank 1, is ${fmtThreshold(rank1)}.`,
+            ]
+          : [familyLine],
+    };
+  }
+
+  if (rank1 !== null) {
+    return {
+      value: fmtThreshold(rank1),
+      caption: 'the strictest bar in this session, at rank 1',
+      lines: [familyLine],
+    };
+  }
+
+  // Neither reading is available. Nothing is quoted and the section does not
+  // render, rather than rendering a bar with no number under it.
+  return null;
+}
+
+/**
+ * Why this row was killed, in two sentences built from its own numbers.
+ *
+ * Returns an empty array when there is nothing truthful to say — a CIRCUIT_BREAK
+ * row, whose metrics are placeholders written by `log/decisions.ts` rather than
+ * measured, or a kill with no reason recorded. The caller falls back to
+ * `VERDICT_MEANING`. Rendering those placeholder numbers would print a stopped
+ * loop as a measured result, which is the single most misleading thing this
+ * screen could do.
+ *
+ * The values shown are absolute where the gate compared absolute values: the
+ * IC and t-statistic floors ask whether a relationship is detectable, not which
+ * way it points. Showing a signed IC beside an unsigned floor would make a
+ * correctly-killed -0.05 read as though it had cleared a floor of 0.04. The
+ * signed values are in `killReasonTechnical`, one click away.
+ */
+export function killSentences(row: DecisionRow): string[] {
+  if (row.decision === 'CIRCUIT_BREAK') return [];
+  const reason = row.reason;
+  if (!reason) return [];
+  const m = row.metrics;
+
+  switch (reason) {
+    case 'p_value_exceeds_bh_threshold': {
+      const family = row.total_hypotheses_attempted_this_session;
+      const many = family === 1 ? 'hypothesis' : 'hypotheses';
+      return [
+        `p ${fmtThreshold(m.raw_p_value)} did not survive the multiple-testing bar (${fmtThreshold(
+          m.bh_adjusted_threshold,
+        )}).`,
+        `At ${fmtInt(family)} ${many}, the gate requires stronger evidence than that.`,
+      ];
+    }
+    case 'insufficient_obs':
+      return [
+        `${fmtInt(m.n_obs)} valid observations, against a floor of ${PRESCRIBED.min_obs}.`,
+        'Too few to test, so the gate killed it on the evidence available rather than on the idea.',
+      ];
+    case 'ic_below_floor':
+      return [
+        `IC ${fmtIc(Math.abs(m.ic))} is below the preregistered floor of ${PRESCRIBED.min_ic}.`,
+        'The signal and the forward return move together too weakly to call this a relationship.',
+      ];
+    case 't_stat_below_floor':
+      return [
+        `t-stat ${fmtT(Math.abs(m.t_stat))} is below the preregistered floor of ${PRESCRIBED.min_t_stat.toFixed(
+          1,
+        )}.`,
+        'At this sample size the result cannot be told apart from chance.',
+      ];
+    case 'baseline_not_beaten':
+      return [
+        `IC ${fmtIc(Math.abs(m.ic))} did not beat a naive baseline (${fmtIc(
+          Math.abs(m.baseline_ic),
+        )}) that uses the previous period’s return as the signal.`,
+        'A simpler signal already does at least as well on this data.',
+      ];
+    case 'lookback_bias_detected':
+      return [
+        'The signal’s own past values predicted it, so the test was measuring the lookback window rather than the market.',
+        'The gate killed it so a lookback artefact could not be counted as a finding.',
+      ];
+    case 'duplicate_family':
+      return [
+        'An earlier hypothesis in this session already tested this signal and target pair.',
+        'The gate killed it so the same question could not be counted twice in the family.',
+      ];
+    case 'schema_validation_failed':
+      return [
+        'The hypothesis did not conform to the required structure, so no backtest ran.',
+        'The gate killed it before any compute was spent — the idea itself was never tested.',
+      ];
+    default:
+      // An unseen reason renders as its own code rather than as a paraphrase of
+      // something it might not mean.
+      return [killReasonPlain(reason) ?? `killed: ${reason}`];
+  }
+}
+
+/**
+ * The technical detail behind "What does this mean?".
+ *
+ * This is the same row as `killSentences`, shown raw and signed. It exists so
+ * the first impression can stay a plain sentence without the product hiding
+ * anything: every number the plain sentence rounded or took an absolute value of
+ * is here at full precision.
+ *
+ * Returns an empty array for a row with no gate evidence behind it — an
+ * AUTO-KILLED row that never reached the backtest, or a CIRCUIT_BREAK row whose
+ * metrics are placeholders written by `log/decisions.ts`. Both carry zeros and a
+ * `raw_p_value` of 1 that no test produced, and printing those under a heading
+ * that promises technical detail would be the most misleading thing on the
+ * screen: a proposal that was never tested, and a loop that was never running,
+ * would both read as measured results.
+ */
+export function killReasonTechnical(row: DecisionRow): string[] {
+  if (!hasGateEvidence(row)) return [];
+  const m = row.metrics;
+  return [
+    `IC ${fmtIc(m.ic)}  ·  t-stat ${fmtT(m.t_stat)}  ·  n ${fmtInt(m.n_obs)}  ·  hit rate ${fmt(
+      m.hit_rate,
+      3,
+    )}`,
+    `raw p ${fmtThreshold(m.raw_p_value)}  ·  BH bar at this rank ${fmtThreshold(
+      m.bh_adjusted_threshold,
+    )}`,
+    `baseline IC ${fmtIc(m.baseline_ic)}`,
+    `family size when this verdict was reached: ${fmtInt(
+      row.total_hypotheses_attempted_this_session,
+    )}`,
+  ];
+}
+
+/** The three numbers the nav counter and the orientation strip both show. */
+export interface SessionCounts {
+  attempted: number;
+  passed: number;
+  killed: number;
+}
+
+/**
+ * The session's score, or null when the stats are not in hand yet.
+ *
+ * The word is "attempted", not "tested", and that is a correction rather than a
+ * preference. `hypotheses_attempted` is incremented in `session/loop.ts` BEFORE
+ * the schema wall runs, so it counts proposals the wall stopped before any
+ * backtest — and a proposal that was never backtested was not tested. It is the
+ * field's own name, so the word on screen and the field on the wire agree.
+ *
+ * "killed" is the remainder of attempted minus promoted, per the same file, and
+ * it includes those pre-backtest kills: they are recorded with a KILL decision
+ * and an AUTO-KILLED stamp, so counting them anywhere else would lose them.
+ */
+export function sessionCounts(
+  stats:
+    | Pick<
+        SessionStats,
+        'hypotheses_attempted' | 'hypotheses_promoted' | 'hypotheses_killed'
+      >
+    | null
+    | undefined,
+): SessionCounts | null {
+  if (!stats) return null;
+  const values = [
+    stats.hypotheses_attempted,
+    stats.hypotheses_promoted,
+    stats.hypotheses_killed,
+  ];
+  if (!values.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  return {
+    attempted: stats.hypotheses_attempted,
+    passed: stats.hypotheses_promoted,
+    killed: stats.hypotheses_killed,
+  };
+}
+
+/** "43 attempted · 1 passed · 42 killed" — one wording, two placements. */
+export function sessionScoreLine(counts: SessionCounts | null): string | null {
+  if (!counts) return null;
+  return `${fmtInt(counts.attempted)} attempted · ${fmtInt(counts.passed)} passed · ${fmtInt(
+    counts.killed,
+  )} killed`;
 }

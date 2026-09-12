@@ -22,10 +22,19 @@ import {
   COLUMN_TIPS,
   OPERATOR_PLAIN,
   SIGNAL_PLAIN,
-  killReasonPlain,
+  barItMustClear,
+  hypothesisQuestion,
+  killReasonTechnical,
+  killSentences,
 } from '@/lib/copy';
-import { fmtIc, fmtInt, fmtP, fmtT, fmtThreshold, fmtWindow, targetLabel } from '@/lib/format';
-import type { DecisionMetrics, DecisionRow, HypothesisShape, SessionPhase } from '@/lib/types';
+import { fmtIc, fmtInt, fmtP, fmtT, fmtWindow, targetLabel } from '@/lib/format';
+import type {
+  DecisionMetrics,
+  DecisionRow,
+  HypothesisShape,
+  SessionPhase,
+  SessionStats,
+} from '@/lib/types';
 import { verdictForDecision, hasGateEvidence } from '@/lib/verdict';
 import { FieldList, FieldRow } from './Field';
 import { Panel } from './Panel';
@@ -41,6 +50,12 @@ export interface HypothesisPanelProps {
   /** The decided row, when a verdict has been reached. */
   entry: DecisionRow | null;
   phase: SessionPhase | null;
+  /**
+   * The session's counters, for the "bar it must clear" section. Null while
+   * /api/status has not answered — the section then quotes the row's own bar, or
+   * does not render.
+   */
+  stats?: SessionStats | null;
 }
 
 /** The amber marker that says a backtest is running. Stops when it ends. */
@@ -70,9 +85,41 @@ export function HypothesisPanel({
   metrics,
   entry,
   phase,
+  stats = null,
 }: HypothesisPanelProps) {
   const decided = entry !== null;
   const running = phase === 'running' && hypothesis !== null && !decided;
+
+  /*
+   * The hypothesis, said in English, above the fields it was built from.
+   *
+   * This is a rendering of the structured fields and nothing else — see
+   * `hypothesisQuestion` in lib/copy.ts. Null when there is no readable
+   * hypothesis, in which case the fields below stand on their own and no
+   * question is shown, because an empty question mark over a card is worse than
+   * a card with no question.
+   */
+  const question = hypothesisQuestion(hypothesis);
+
+  /*
+   * The bar, from the row's own numbers when a verdict exists and from the
+   * session's when it does not.
+   *
+   * The two are read from different places on purpose. `bh_adjusted_threshold` is
+   * this row's own bar and is what the stamp's `passed_bh` line prints, so
+   * quoting anything else here would put two different thresholds under one label
+   * on one screen. `current_bh_threshold_rank1` is the session's strictest bar,
+   * which is the only absolute bar that can be quoted for a hypothesis whose rank
+   * is not yet known.
+   */
+  const bar = barItMustClear({
+    attempted: entry
+      ? entry.total_hypotheses_attempted_this_session
+      : (stats?.hypotheses_attempted ?? Number.NaN),
+    rank1Threshold: stats?.current_bh_threshold_rank1 ?? null,
+    ownThreshold:
+      entry && hasGateEvidence(entry) ? entry.metrics.bh_adjusted_threshold : null,
+  });
 
   return (
     <Panel
@@ -101,6 +148,17 @@ export function HypothesisPanel({
         </div>
       ) : (
         <div className="flex flex-col gap-5">
+          {question ? (
+            <p className="max-w-[70ch] text-heading font-semibold text-ink">{question}</p>
+          ) : null}
+
+          {/*
+            The fields the question was built from, kept directly beneath it and
+            unlabelled, because that is what they are: the question's own
+            breakdown. A reader who wants to check the sentence can read it here
+            field by field — the sentence is a function of exactly these values
+            and of nothing else.
+          */}
           <FieldList>
             <FieldRow
               label="signal"
@@ -138,7 +196,7 @@ export function HypothesisPanel({
           </FieldList>
 
           <div>
-            <h3 className="mb-1 text-heading font-semibold text-ink">Backtest</h3>
+            <h3 className="mb-1 text-heading font-semibold text-ink">Running the test</h3>
             <FieldList>
               <FieldRow
                 label="IC"
@@ -162,13 +220,31 @@ export function HypothesisPanel({
                 value={fmtIc(metrics?.baseline_ic)}
                 tip={COLUMN_TIPS.baseline}
               />
-              <FieldRow
-                label="BH threshold"
-                value={fmtThreshold(metrics?.bh_adjusted_threshold)}
-                tip={COLUMN_TIPS.bh}
-              />
             </FieldList>
           </div>
+
+          {/*
+            The bar, between the evidence and the verdict. Read in that order it
+            explains the stamp before the stamp arrives: a reader who has just
+            seen a threshold tighten as the family grew is not surprised when the
+            next card is killed for failing to clear it.
+          */}
+          {bar ? (
+            <div>
+              <h3 className="mb-1 text-heading font-semibold text-ink">
+                The bar it must clear
+              </h3>
+              <FieldList>
+                <FieldRow label="BH bar" value={bar.value} tip={COLUMN_TIPS.bh} />
+              </FieldList>
+              <p className="mt-2 text-caption text-ink-light">({bar.caption})</p>
+              {bar.lines.map((line, index) => (
+                <p key={index} className="mt-1 max-w-[70ch] text-label text-ink">
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : null}
 
           <div>
             <h3 className="mb-2 text-heading font-semibold text-ink">Gate</h3>
@@ -176,9 +252,14 @@ export function HypothesisPanel({
               <VerdictStamp
                 key={entry.entry_id}
                 verdict={verdictForDecision(entry)}
-                reason={killReasonPlain(entry.reason) ?? entry.detail}
+                // An empty array — a circuit break, or a kill with no reason — is
+                // passed through as-is: the stamp falls back to the verdict's own
+                // definition, and inventing a sentence about a halted loop here
+                // would be inventing a measurement.
+                reason={killSentences(entry)}
                 metrics={hasGateEvidence(entry) ? entry.metrics : null}
                 checks={hasGateEvidence(entry) ? entry.checks : null}
+                technical={killReasonTechnical(entry)}
                 size="large"
                 animate
               />

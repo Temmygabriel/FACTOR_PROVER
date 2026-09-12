@@ -113,6 +113,14 @@ export interface DecisionRow {
   generator: string;
   partition_used: string;
 
+  /**
+   * The family size when this verdict was reached — how many hypotheses the
+   * session had attempted by then, and therefore how many the BH correction was
+   * spread across. Recorded per entry, so it is the count at the time rather
+   * than the session's current total.
+   */
+  total_hypotheses_attempted_this_session: number;
+
   decision: GateDecisionType | 'CIRCUIT_BREAK';
   reason: KillReason | null;
   detail: string;
@@ -274,17 +282,50 @@ export interface ApiError {
 }
 
 /**
- * PROVISIONAL — GET /api/log/verify is listed in build spec §11 but has no
- * shape in contract.ts. Every field is optional and rendered defensively, so a
- * response this file cannot predict degrades to showing the raw detail string
- * rather than inventing a validity result. Reported to the agent author.
+ * One specific way the hash chain failed to verify, from the contract's
+ * `VerifyFailureRow`. `line` is 1-based in the log file, so a reader who opens
+ * `logs/decisions.jsonl` can go straight to the entry named.
  */
-export interface ChainVerification {
-  valid?: boolean;
-  checked?: number;
-  broken_entry_id?: string | null;
-  detail?: string;
-  verified_at?: string;
+export interface VerifyFailureRow {
+  kind: string;
+  line: number;
+  entry_id: string | null;
+  /** What was expected and what was found. */
+  detail: string;
+}
+
+/**
+ * The result of re-verifying the decision log's hash chain.
+ *
+ * This was PROVISIONAL for a while — five invented optional fields (`valid`,
+ * `checked`, `broken_entry_id`, `verified_at`) reading against an endpoint whose
+ * real shape was in contract.ts all along. The cost of that guess was not
+ * cosmetic: the log screen's banner had to read both shapes to avoid rendering
+ * every real answer as unreadable, and a shape that has to be guessed is a shape
+ * that can be guessed wrongly in the direction of showing a pass.
+ *
+ * It is now a straight mirror of `VerifyResponse`, which is what the deployed
+ * endpoint actually returns.
+ *
+ * `ok: true` with `entries_checked: 0` means the log exists and is empty. That is
+ * vacuously true, not evidence of integrity, and the banner says "nothing to
+ * verify" rather than "verified".
+ *
+ * `unavailable_reason` is set when the log could not be read at all, and it comes
+ * with ok false and an empty `failures` array. It must be read BEFORE `ok`, or a
+ * log that does not exist yet is reported as a log that has been tampered with.
+ */
+export interface VerifyResponse {
+  ok: boolean;
+  entries_checked: number;
+  /** entry_hash of the last entry, or null when the log holds none. */
+  head_hash: string | null;
+  failures: VerifyFailureRow[];
+  /** Path to the log, relative to the repo root. */
+  log_path: string;
+  /** How to reproduce this from a checkout. */
+  reproduce: string;
+  unavailable_reason: string | null;
 }
 
 /**
