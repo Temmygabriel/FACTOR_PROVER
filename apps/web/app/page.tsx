@@ -92,13 +92,30 @@ export default function LoopPage() {
   const running = phase === 'running' && current.hypothesis !== null && current.entry === null;
 
   /*
-   * Nothing has been attempted, so there is nothing to render a verdict about.
-   * Keyed on the attempt count rather than on an empty log because the log and
-   * the count can arrive at different moments, and the count is the one that
-   * says whether the bench has done any work.
+   * THIS SESSION has attempted nothing, so there is no verdict from it to render.
+   *
+   * The distinction between "this session" and "this project" is the whole
+   * reason this comment is three paragraphs long. The predicate reads
+   * `stats.hypotheses_attempted`, which comes from `attemptsMade` — a counter
+   * that starts at zero on every boot and only moves when THIS process runs an
+   * iteration. The committed decision log is read from disk and is entirely
+   * unaffected by a restart. On a free tier that sleeps when idle, those two
+   * diverge as a matter of routine, and the previous version of this comment
+   * asserted the opposite: that the count "says whether the bench has done any
+   * work". It does not. On 2026-09-13 the deployed service reported
+   * `hypotheses_attempted: 0` and 201 committed entries at the same moment.
+   *
+   * So `isEmpty` gates the empty bench, and the empty bench is told the
+   * committed total and must say so rather than reporting an absence. What it
+   * must never do is read as "nothing has ever been tested".
+   *
+   * Keyed on the attempt count rather than on an empty log because the two
+   * arrive at different moments, and it is the count that says whether the bench
+   * has done any work IN THIS SESSION.
    *
    * This is the state a cold visitor meets most often: the deployed agent runs
    * on a free tier that sleeps when idle and loses its session when it wakes.
+   * See PROGRESS.md finding 35.
    */
   const isEmpty = statusData !== null && statusData.stats.hypotheses_attempted === 0;
 
@@ -203,7 +220,17 @@ export default function LoopPage() {
           <p className="mt-1 font-mono text-label text-ink-light">
             {statusData ? (
               <>
-                {fmtInt(statusData.stats.hypotheses_attempted)} attempted ·{' '}
+                {/*
+                  "in this session" is load-bearing, not padding. Every counter on
+                  this line is this PROCESS's — `attemptsMade` starts at zero when
+                  the server boots — while the log table below is read from the
+                  committed file and can hold hundreds of rows at the same instant.
+                  Unqualified, "0 attempted" directly above a 201-row record reads
+                  as a claim about the project rather than about this run, and the
+                  two panels then contradict each other on one screen. See
+                  PROGRESS.md finding 35.
+                */}
+                {fmtInt(statusData.stats.hypotheses_attempted)} attempted in this session ·{' '}
                 {fmtInt(statusData.stats.hypotheses_promoted)} promoted ·{' '}
                 {killedSegment(statusData.stats)} ·{' '}
                 {fmtInt(statusData.stats.retired_factors)} retired
@@ -234,6 +261,14 @@ export default function LoopPage() {
       {isEmpty && statusData ? (
         <EmptyBench
           status={statusData}
+          /*
+           * What the COMMITTED record holds, which is a different quantity from
+           * the zero in the header and is why it is passed at all. `log.data` is
+           * the same poll the table below renders, so this cannot drift from the
+           * rows it describes. Null means the log read has not answered yet —
+           * rendered as "not read", never as zero.
+           */
+          committedEntries={log.data ? log.data.total : null}
           onStart={toggleLoop}
           pending={control.pending}
           message={control.text}

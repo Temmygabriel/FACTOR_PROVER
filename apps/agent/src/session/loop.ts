@@ -989,7 +989,15 @@ export class SessionLoop {
         factors.length > 0
           ? null
           : this.family.size === 0
-            ? 'No hypotheses have been attempted yet. Nothing has been tested, so nothing has been promoted or rejected — this is an empty session, not a null result.'
+            ? // Scoped to THIS SESSION on purpose, and the distinction is not
+              // pedantic. `family.size` counts what this process has attempted;
+              // it starts at zero on every boot. The committed decision log is
+              // read from disk and can hold hundreds of entries at the same
+              // moment, so an unscoped "nothing has been tested" is contradicted
+              // by the log screen one click away. Both readings are true of
+              // different things and the sentence has to say which one it means.
+              // See PROGRESS.md finding 35.
+              'No hypotheses have been attempted in this session yet. Nothing has been tested here, so nothing has been promoted or rejected by this run — this is an empty session, not a null result. The committed log from an earlier run may hold entries; the log screen is where that record lives.'
             : `${this.family.size} hypotheses attempted, ${this.family.rejectedCount(this.policy.fdr_level)} of them currently clearing the Benjamini-Hochberg threshold, and none passing all five gate checks. That is a result: under FDR control at q=${this.policy.fdr_level}, a session of this size is expected to produce few or no survivors when there is nothing there to find.`,
     };
   }

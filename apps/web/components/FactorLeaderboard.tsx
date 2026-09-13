@@ -52,6 +52,19 @@ export interface FactorLeaderboardProps {
   killRows: DecisionRow[];
   /** Count from session stats, so the header is right before every row is loaded. */
   killCount: number;
+  /**
+   * The log holds entries beyond the page already loaded, so `killCount` is a
+   * LOWER BOUND on the kills this page can show.
+   *
+   * Without it the "Show all" control was gated on `killCount > killPageSize`,
+   * which is exactly the door it was meant to open: on the deployed service the
+   * session counter reads zero after a restart, so `killCount` was 0 and the
+   * button that loads the remaining two hundred committed kills was never
+   * rendered. The truth is available from the log's own cursor, so it is read
+   * from there rather than inferred from a number that resets. PROGRESS.md
+   * finding 35.
+   */
+  moreKillsAvailable: boolean;
   attempted: number;
   fdrLevel: number;
   /** Every kill in the session is loaded; the toggle is no longer offered. */
@@ -96,6 +109,7 @@ export function FactorLeaderboard({
   emptyReason,
   killRows,
   killCount,
+  moreKillsAvailable,
   attempted,
   fdrLevel,
   allKillsLoaded,
@@ -104,6 +118,19 @@ export function FactorLeaderboard({
   onCollapseKills,
   killPageSize,
 }: FactorLeaderboardProps) {
+  /*
+   * What the "Killed" heading is allowed to claim.
+   *
+   * `killCount` comes from the session's counters and resets with the process;
+   * once every page of the log is loaded, `killRows.length` is the count the
+   * reader can verify by scrolling, so it wins. While pages remain, the number is
+   * a lower bound and is marked as one — a bare total that silently excluded the
+   * unloaded rows is the mismatch finding 21 describes, and the `+` is the
+   * smallest honest way to say "at least".
+   */
+  const shownKillTotal = allKillsLoaded ? killRows.length : killCount;
+  const killsArePartial = moreKillsAvailable && !allKillsLoaded;
+
   return (
     <div className="flex flex-col gap-6">
       <Panel
@@ -188,14 +215,20 @@ export function FactorLeaderboard({
       </Panel>
 
       <Panel
-        title={`Killed (${killCount})`}
+        title={`Killed (${shownKillTotal}${killsArePartial ? '+' : ''})`}
         meta={
           <span>
-            {killRows.length} of {killCount} shown
+            {killRows.length} of {shownKillTotal}
+            {killsArePartial ? '+' : ''} shown
           </span>
         }
         actions={
-          killCount > killPageSize ? (
+          /*
+           * `allKillsLoaded` is in this condition so the toggle does not vanish
+           * once everything is on screen — without it a reader who loaded all two
+           * hundred rows would have no way back to the first fifty.
+           */
+          allKillsLoaded || killsArePartial || killCount > killPageSize ? (
             allKillsLoaded ? (
               <button
                 type="button"

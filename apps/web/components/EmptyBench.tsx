@@ -15,6 +15,22 @@
  * fail. One might not.") and offer the one action that changes the screen, rather
  * than reporting an absence.
  *
+ * AN EMPTY SESSION IS NOT AN EMPTY PROJECT, and this screen is where those two
+ * got confused. Its heading used to read "No hypothesis has been tested yet."
+ * over a session counter of zero — while the decision table on the same page
+ * listed twelve real verdicts and "201 total", and the log screen showed a
+ * chain-intact badge over 201 entries. Both readings were true of different
+ * things: `stats.hypotheses_attempted` counts what THIS PROCESS has attempted
+ * and resets on every boot, whereas the log is read from the committed file and
+ * survives the restart. On 2026-09-13 the deployed service held 201 committed
+ * entries and a zero counter simultaneously. See PROGRESS.md finding 35.
+ *
+ * So the heading is scoped to the session, and when a committed record exists
+ * the screen says how large it is and where to read it. `committedEntries` is
+ * null until the log poll answers, and null is NOT rendered as zero — "not read
+ * yet" and "nothing there" are different statements and this component does not
+ * get to collapse them.
+ *
  * THE CHECKLIST REPORTS ONLY WHAT THE SERVER SENDS. The brief's mock lists four
  * checks, one of which — "Bitget API connected" — no endpoint reports. A row with
  * a tick beside it that nothing computed is the one thing this product cannot
@@ -35,6 +51,11 @@ import type { StatusResponse } from '@/lib/types';
 
 interface Props {
   status: StatusResponse;
+  /**
+   * Entries in the committed decision log, from the same `/api/log` poll that
+   * renders the table below this panel. Null means that read has not answered.
+   */
+  committedEntries: number | null;
   onStart: () => void;
   pending: boolean;
   /** The control route's own answer, or its failure. Never invented here. */
@@ -139,13 +160,25 @@ function CheckRow({ check }: { check: Check }) {
   );
 }
 
-export function EmptyBench({ status, onStart, pending, message }: Props) {
+export function EmptyBench({ status, committedEntries, onStart, pending, message }: Props) {
   const rows = checks(status);
   // Starting is only meaningful from a phase where the loop is not already
   // going. From `running` or `paused` the control is the pause/resume button in
   // the session header, and a second one here would be two controls for one
   // state.
   const canStart = ['idle', 'stopped', 'error'].includes(status.phase);
+  /*
+   * Zero and null are different: null is "this read has not answered", and only a
+   * confirmed zero means the record is empty.
+   *
+   * `committed` is a plain number rather than `committedEntries` narrowed by the
+   * flag, because the flag is used inside JSX and this file cannot be
+   * type-checked locally — there is no `npm install` on this machine, so a
+   * narrowing that TypeScript declined to carry into the branch would be a build
+   * error CI catches and I could not have. `?? 0` makes `fmtInt` total.
+   */
+  const committed = committedEntries ?? 0;
+  const hasCommitted = committed > 0;
 
   return (
     <section
@@ -153,8 +186,17 @@ export function EmptyBench({ status, onStart, pending, message }: Props) {
       className="border border-rule bg-surface px-4 py-4"
       aria-labelledby="empty-bench-heading"
     >
+      {/*
+        Scoped to the session, deliberately, and unconditionally — not swapped out
+        when a committed log exists. The unscoped version ("No hypothesis has been
+        tested yet.") was false whenever a committed log existed, which on the
+        deployed free tier is every moment after a cold start. A heading that is
+        switched off a second, not-yet-arrived read would be a different version of
+        the same mistake: for as long as that read is in flight, the heading would
+        assert something this panel cannot know.
+      */}
       <h2 id="empty-bench-heading" className="text-heading font-semibold text-ink">
-        No hypothesis has been tested yet.
+        No hypothesis has been tested in this session yet.
       </h2>
       <p className="mt-1 max-w-[80ch] text-label text-ink-light">
         {canStart
@@ -162,6 +204,28 @@ export function EmptyBench({ status, onStart, pending, message }: Props) {
           : 'The loop is running; the first hypothesis is on its way.'}
       </p>
       <p className="mt-3 text-heading text-ink">Most will fail. One might not.</p>
+
+      {/*
+        The committed record, stated rather than left implied. Without this, the
+        zero in the header above reads as a claim about the project; with it, the
+        reader is told there are two counts on this page and which is which.
+        `committedEntries` is a required prop rather than an optional one, so a
+        caller cannot quietly reintroduce the omission.
+      */}
+      {hasCommitted ? (
+        <p className="mt-4 max-w-[80ch] border-l-2 border-rule pl-3 text-label text-ink-light">
+          A previous run’s log is committed to the repository and holds{' '}
+          <span className="font-mono text-ink">{fmtInt(committed)}</span> entries — the verdicts
+          listed at the foot of this page, and the full record on the log screen. The counters
+          above are this session’s only, and a free-tier restart is why they read zero.
+        </p>
+      ) : null}
+      {committedEntries === null ? (
+        <p className="mt-4 max-w-[80ch] border-l-2 border-rule pl-3 text-label text-ink-light">
+          The committed decision log has not been read yet, so this page cannot say how large it
+          is. That is not the same as its being empty.
+        </p>
+      ) : null}
 
       <div className="mt-5">
         <h3 className="text-label font-semibold text-ink">Pre-flight</h3>

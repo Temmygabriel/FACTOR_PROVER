@@ -36,6 +36,7 @@
 | UI redesign brief (8 changes) | **6 of 7 implementable changes done; Change 8 has no target route** |
 | Demo run workflow | **Green — was pinned to a Node that cannot run it. See finding 31.** |
 | **Committed demo run** | **DONE — 200 hypotheses, 201 entries, chain intact (`6022039`)... see "The demo run"** |
+| **Deployed site vs. committed record** | **CONTRADICTS ITSELF — "0 attempted" beside a 201-entry table. Finding 35, action 23.** |
 | README / demo-script numbers | **NOT DONE — still spec §16's impossible example. Action 17, second half.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
@@ -680,6 +681,18 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     and with the committed log it is no longer hypothetical: 201 rows against 200 hypotheses is
     exactly this mismatch, caused by the same demotion that produced finding 33.
 22. ~~Two comments that had become lies~~ — **done 2026-09-13**, see finding 34.
+23. **Stop the deployed site contradicting itself (finding 35).** `hypotheses_attempted` counts
+    this process's attempts and `/api/log`'s `total` counts the committed file's entries; both
+    are correct and the UI prints them as if they were the same quantity, so a cold deployment
+    says "No hypothesis has been tested yet" above a table of 201. The fix is a decision before
+    it is a patch — either `/api/status` reports the live count and the committed count as two
+    named fields, or the UI reads both and names which is which. Cheapest honest version: give
+    `EmptyBench` the log reading (it already has the `StatusResponse`, and `page.tsx` already
+    polls `/api/log`), and scope the heading to the live session while stating what the
+    committed record holds. Same edit should name which session the header's id refers to, since
+    two are on screen at once. Touches `app/page.tsx`, `components/EmptyBench.tsx`,
+    `components/NavBar.tsx` (the strip's `#empty-bench` target) and `session/loop.ts:992`'s
+    `empty_reason`; the frontend is not type-checked locally, so the push is the check.
 
 ---
 
@@ -792,6 +805,51 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
       (`not.toMatch(/sent in a single confirmed call/)`), so the fix has teeth.
     Neither change alters behaviour, which is why neither was urgent — and why neither would
     ever have been caught by a test that only checks what the code does.
+
+35. **The deployed site contradicts itself, on two screens a judge will click between — and it
+    does so right now.** Committing the log (finding 28's structural fix) removed the empty
+    product and replaced it with a self-contradiction.
+    The two numbers come from two different places and neither endpoint is wrong:
+
+    - `/api/status` reports `stats.hypotheses_attempted` from `this.attemptsMade`
+      (`session/loop.ts:176`), a counter of hypotheses attempted **by this process**. It starts
+      at 0 on every boot, and the server boots to `idle` and does not auto-start the loop
+      (`src/index.ts:383–391`). On a free tier that sleeps when idle, "0 attempts" is the normal
+      state of a live deployment *however much work it has ever done*.
+    - `/api/log` reports `this.log.entryCount`, read out of the committed `decisions.jsonl` at
+      boot.
+
+    So the two disagree by construction after any sleep/wake, and the frontend keys three
+    separate things on the status counter alone:
+
+    - `app/page.tsx:103` — `isEmpty`, which renders `EmptyBench` and suppresses the loop controls.
+    - `app/page.tsx:206` — the header line, `0 attempted · 0 promoted · 0 killed · 0 retired`.
+    - `components/NavBar.tsx:143` — the orientation strip's link target, which sends the reader
+      to `#empty-bench` instead of to the live hypothesis.
+    - plus `/api/leaderboard`'s `empty_reason` (`session/loop.ts:992`): *"No hypotheses have been
+      attempted yet. Nothing has been tested, so nothing has been promoted or rejected — this is
+      an empty session, not a null result."*
+
+    **Verified live on 2026-09-13**, against `https://factor-prover-agent.onrender.com`:
+    `/api/status` returns `"phase":"idle"`, `"hypotheses_attempted":0`, session `S-f545ca29`;
+    `/api/log` returns `total: 201`. The home page therefore renders a heading — "No hypothesis
+    has been tested yet." — with the compact decision table on the *same screen* showing twelve
+    real rows and "201 total", and the log screen showing "201 entries · chain intact".
+
+    The server's distinction is the correct one and worth keeping: `attemptsMade` genuinely is
+    this process's count and `entryCount` genuinely is the file's. What is false is the **copy**,
+    which does not say which of the two it means. "No hypothesis has been tested yet" reads as a
+    claim about the project; it is only true of the live session, and the screen that prints it
+    has a committed record of 201 tests sitting underneath it. `EmptyBench` already receives the
+    whole `StatusResponse`; the log reading is the thing it does not receive.
+
+    A second instance of the same defect is in the header: it prints `Session S-f545ca29` — the
+    live session — directly above rows produced by the committed run. Two sessions are on screen
+    at once and nothing names which is which.
+
+    Same family as 33 and 34: **the words assert more than the data supports.** 33 is a field
+    whose name overstates its value, 34 is comments that had become lies, 35 is interface copy
+    that reads as a claim about the project when it is a claim about one process.
 
 ---
 
@@ -991,3 +1049,22 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   sees (finding 32). The workflow verifies the file itself before committing it, so the bytes
   are checked — but the `decision-log` CI job still has not verified a committed chain
   automatically.
+
+- **2026-09-13** — Closed the loop on the demo run by checking what the **deployed site** actually
+  serves, and found it arguing with itself (finding 35). `/api/status` reports
+  `hypotheses_attempted: 0`, phase `idle`, session `S-f545ca29`; `/api/log` reports `total: 201`.
+  Both are correct readings of different things — this process's attempts, and the committed
+  file's entries — and the frontend prints them as though they were the same quantity. So the
+  home page renders the heading "No hypothesis has been tested yet." with a twelve-row decision
+  table and "201 total" on the same screen, while the log screen shows "201 entries · chain
+  intact". Three frontend call sites key on the status counter alone (`page.tsx:103` for
+  `isEmpty`, `page.tsx:206` for the header line, `NavBar.tsx:143` for the strip's link target)
+  and `/api/leaderboard`'s `empty_reason` (`loop.ts:992`) states outright that nothing has ever
+  been tested.
+
+  Not a bug in either endpoint — the server's distinction between the live session and the
+  committed record is exactly right, and a cold deployment really has attempted nothing. The
+  false thing is the copy, which reads as a claim about the project. Recorded as action 23; it
+  is the same defect family as 33 (a field whose name overstates its value) and 34 (comments
+  that had become lies): words asserting more than the data supports, which is the defect this
+  whole submission is built to hunt in other people's factors.

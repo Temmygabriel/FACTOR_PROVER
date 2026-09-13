@@ -54,8 +54,24 @@ function Figure({ value }: { value: number }) {
  * early, and a log-derived total must not be printed up here as a session total.
  * With no status reading the block keeps its place and states that, rather than
  * filling in a number from somewhere else.
+ *
+ * THAT RULE IS WHY THIS PANEL NEEDS `committedEntries`. Keeping the log's total
+ * out of the session's sentence is right, but a fresh process reports
+ * `0 attempted · 0 killed · 0 promoted` — its normal state after any free-tier
+ * restart — and this panel then rendered "0 hypotheses entered the bench" over a
+ * table of two hundred kill rows read from the committed log. Declining to
+ * conflate the two counts is not the same as declining to mention the second one.
+ * So when the session is empty and the record is not, the panel states both and
+ * computes no ratio: the ratio it would print is the record's, and it has only
+ * the session's numbers to compute it from. PROGRESS.md finding 35.
  */
-function BenchRatio({ stats }: { stats: SessionStats | null }) {
+function BenchRatio({
+  stats,
+  committedEntries,
+}: {
+  stats: SessionStats | null;
+  committedEntries: number;
+}) {
   if (!stats) {
     return (
       <section className="border border-rule bg-surface px-4 py-3">
@@ -75,6 +91,30 @@ function BenchRatio({ stats }: { stats: SessionStats | null }) {
     hypotheses_killed: killed,
     hypotheses_promoted: promoted,
   } = stats;
+
+  /*
+   * The session has an empty bench and the repository does not. Reported as two
+   * facts rather than as one zero. See the doc comment above.
+   */
+  if (attempted === 0 && committedEntries > 0) {
+    return (
+      <section className="border border-rule bg-surface px-4 py-3">
+        <p className="text-heading font-semibold text-ink">
+          No hypothesis has been attempted in this session.
+        </p>
+        <p className="mt-1 max-w-[80ch] text-label text-ink-light">
+          These counters are the live process’s own, and a free-tier restart is why they read
+          zero — not a bench that has never run. The committed decision log holds{' '}
+          <Figure value={committedEntries} /> entries from an earlier run, and the verdicts below
+          are read from it.
+        </p>
+        <p className="mt-4 max-w-[80ch] text-label text-ink">
+          No ratio is shown here: this panel computes one from the session’s counters only, and
+          the session has none.
+        </p>
+      </section>
+    );
+  }
 
   // The agent computes killed as attempted minus promoted, so this denominator
   // is the whole bench and the two segments cover the track exactly.
@@ -178,7 +218,22 @@ export default function LeaderboardPage() {
   }
 
   const statusData = status.data;
-  const attempted = statusData?.stats.hypotheses_attempted ?? log.data?.total ?? 0;
+  /*
+   * The session's own count when it has one, otherwise the committed log's.
+   *
+   * `??` looked like it did this and did not: `statusData?.stats.hypotheses_attempted`
+   * is `0` — not nullish — on a process that has just booted, so the fallback to
+   * `log.data.total` never fired in the one case it exists for. The page then
+   * printed a null-result paragraph reading "0 hypotheses were attempted" directly
+   * above a table of two hundred kill rows read from the committed log.
+   *
+   * `||` is deliberate here and is not the usual sloppy fallback: an attempt count
+   * of zero is precisely the value that means "this session has nothing to
+   * report", which is the condition the fallback is for. The rows below come from
+   * the log either way, so the log's total is the denominator that matches what
+   * the reader can count. PROGRESS.md finding 35.
+   */
+  const attempted = statusData?.stats.hypotheses_attempted || log.data?.total || 0;
   const fdrLevel = statusData?.provenance.fdr_level ?? 0.1;
 
   return (
@@ -189,16 +244,31 @@ export default function LeaderboardPage() {
           {statusData ? (
             <>
               Session {statusData.provenance.session_id} ·{' '}
-              {fmtInt(statusData.stats.hypotheses_attempted)} hypotheses ·{' '}
+              {fmtInt(statusData.stats.hypotheses_attempted)} attempted in this session ·{' '}
               {fmtDateUtc(statusData.provenance.started_at)}
             </>
           ) : (
             'session not reported — the counters below come from the log alone'
           )}
         </p>
+        {/*
+          Which count the numbers below are counting. The table renders rows read
+          from the committed log, so its denominator is the log's total whenever
+          this session has attempted nothing — and the header line above, naming
+          the live session and its zero, would otherwise read as a contradiction
+          of the paragraph two elements down. Stated only when the two actually
+          differ, so the common case stays quiet.
+        */}
+        {statusData && attempted > statusData.stats.hypotheses_attempted ? (
+          <p className="mt-1 max-w-[80ch] text-caption text-ink-light">
+            This session has attempted {fmtInt(statusData.stats.hypotheses_attempted)}; the
+            counts and verdicts below come from the committed decision log, which holds{' '}
+            <span className="font-mono">{fmtInt(attempted)}</span> entries from an earlier run.
+          </p>
+        ) : null}
       </section>
 
-      <BenchRatio stats={statusData?.stats ?? null} />
+      <BenchRatio stats={statusData?.stats ?? null} committedEntries={log.data?.total ?? 0} />
 
       {log.stale ? (
         <StaleNotice failure={log.failure} readAt={log.readAt} onRetry={log.reload} />
@@ -213,7 +283,19 @@ export default function LeaderboardPage() {
           factors={factors}
           emptyReason={leaderboard.data.empty_reason}
           killRows={killRows}
-          killCount={statusData?.stats.hypotheses_killed ?? killRows.length}
+          /*
+           * `||`, not `??`, for the same reason as `attempted` above: a session
+           * that has just booted reports a real zero, and zero kills is what that
+           * zero means — not "the log is empty". See the note on `attempted`.
+           */
+          killCount={statusData?.stats.hypotheses_killed || killRows.length}
+          /*
+           * Read from the log's own cursor rather than from a counter that resets.
+           * This is what keeps the "Show all" control reachable on a cold
+           * deployment, where the session counters say zero while the committed
+           * record holds two hundred kills behind the first page.
+           */
+          moreKillsAvailable={log.data?.next_cursor != null}
           attempted={attempted}
           fdrLevel={fdrLevel}
           allKillsLoaded={allLoaded}

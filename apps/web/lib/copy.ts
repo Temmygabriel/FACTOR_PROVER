@@ -192,12 +192,22 @@ export const TAGLINE =
  * — needs per-reason counts on the wire, which `SessionStats` does not carry.
  * Until it does, this says the true thing generically rather than the false
  * thing specifically.
+ *
+ * THE FIRST LINE USED TO READ "No factors promoted in this session." and the
+ * scope was the problem, not the wording. `attempted` is the session's own count
+ * when the session has one and the committed log's total otherwise (see the
+ * caller), because the rows this copy sits above come from the log. So the number
+ * could be the record's while the sentence claimed it was the session's — and on
+ * the deployed free tier, where the session count resets to zero on every wake,
+ * that is the normal case rather than an edge one. The scope is dropped: the
+ * sentence is true of whichever count the caller passed, and the page header
+ * above it says which. PROGRESS.md finding 35.
  */
 export function nullResultCopy(attempted: number, fdrLevel: number): string[] {
   const n = fmtInt(attempted);
   const singular = attempted === 1;
   return [
-    'No factors promoted in this session.',
+    'No factors promoted.',
     `${n} ${singular ? 'hypothesis was' : 'hypotheses were'} attempted. ${
       singular ? 'It failed' : 'Each failed'
     } at least one of the five preregistered bars: too few observations, an IC below its floor, a t-statistic below its floor, a baseline that already did as well, or the Benjamini-Hochberg correction at FDR ${fdrLevel.toFixed(
