@@ -135,7 +135,23 @@ export function percentileRank(history: readonly number[], value: number): numbe
 
 /**
  * Percent change over `lookbackMinutes`, on the target grid.
- * Returns NaN where the lookback would cross a hole in the series.
+ *
+ * A point whose lookback would cross a hole in the series — or whose start or
+ * end is missing or non-finite — is OMITTED. It is not returned as NaN.
+ *
+ * This comment previously claimed the opposite ("Returns NaN where the lookback
+ * would cross a hole"), and the difference is not cosmetic. `SignalPoint.value`
+ * is a `number`, so a NaN was representable and the comment described a shape
+ * the function never produced. The real behaviour is the more dangerous of the
+ * two: a NaN is visible to every caller and poisons any average it enters,
+ * whereas a dropped point is indistinguishable from a timestamp that was never
+ * on the grid. The array simply comes back shorter and `n_obs` comes out lower,
+ * with nothing to say why.
+ *
+ * So callers must not read a short array as evidence that the lookback was
+ * complete. This is the same class of silent-difference bug that made an empty
+ * spot leg (`[]`, which is truthy) skip a filter and evaluate a combined
+ * hypothesis on one leg — see PROGRESS.md finding 20.
  */
 export function spotReturnSeries(
   series: PriceSeries,

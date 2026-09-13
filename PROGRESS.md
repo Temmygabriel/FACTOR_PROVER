@@ -34,7 +34,9 @@
 | Render backend deploy | **Live and verified — `https://factor-prover-agent.onrender.com`** |
 | Vercel deploy | **Live — `NEXT_PUBLIC_API_BASE_URL` set at project creation** |
 | UI redesign brief (8 changes) | **6 of 7 implementable changes done; Change 8 has no target route** |
-| Committed demo run | **NOT DONE — and now the top risk. See finding 30.** |
+| Demo run workflow | **Green — was pinned to a Node that cannot run it. See finding 31.** |
+| **Committed demo run** | **DONE — 200 hypotheses, 201 entries, chain intact (`6022039`)... see "The demo run"** |
+| README / demo-script numbers | **NOT DONE — still spec §16's impossible example. Action 17, second half.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
 `factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
@@ -49,6 +51,68 @@ time — `NEXT_PUBLIC_API_BASE_URL` — and it is baked into the bundle, so it m
 the Vercel project creation, not after. Until the two are pointed at each other the deployed
 frontend renders its `BackendNotice` panels by design rather than failing, but that is a
 degraded demo, not the deliverable.
+
+---
+
+## The demo run (2026-09-13)
+
+**The submission now has the artifact it was missing: a real session, recorded and committed.**
+
+`apps/agent/logs/decisions.jsonl`, committed by `.github/workflows/demo-run.yml` as `6022039`
+(201 entries, ~180 KB). It is produced by the same `SessionLoop` the deployed server runs,
+against the committed frozen dataset, on the same Node major the service runs.
+
+It had never once succeeded. The workflow was pinned to Node 20 and ran
+`node --experimental-strip-types`, a flag Node 20 does not have, so it died at its first real
+step with `node: bad option` and exit code 9 — before the session began. Finding 31 has the
+detail, including the false comment that justified the pin.
+
+| | |
+|---|---|
+| session id | `S-1a6c5d66` |
+| bound | 200 iterations (the policy's own `max_hypotheses_per_day`) |
+| hypotheses attempted | **200** |
+| promoted / killed | **0 / 200** |
+| log entries | **201** — 200 hypotheses, one of them decided twice |
+| chain | **PASS** — chain intact and append-only |
+| generator | `deterministic` (no provider key configured) |
+
+**It stopped on its own bound, not on the circuit breaker.** That is guaranteed by the loop's
+ordering rather than lucky: `runLoop()` tests the iteration limit *before* it calls
+`breaker.check()`, and `recordHypothesis()` runs exactly once per iteration, so
+`hypotheses_today` reaches 200 only on the iteration the bound check has already claimed. The
+last event in the run log is `reached the configured iteration limit (200); stopping`. Worth
+stating because the opposite outcome — a `CIRCUIT_BREAK` entry — would have meant the run was
+cut off by its own safety rule, and the runner prints a NOTE saying so.
+
+**Why each hypothesis was decided** (this is the shape of a session, and it is a result):
+
+| count | reason |
+|---|---|
+| 73 | `ic_below_floor` |
+| 58 | `t_stat_below_floor` |
+| 31 | `duplicate_family` |
+| 29 | `insufficient_obs` |
+| 8 | `p_value_exceeds_bh_threshold` |
+| 1 | `baseline_not_beaten` |
+| 1 | `PROMOTE` |
+
+**Zero promotions, and one of them was promoted first.** H-0006 clears the gate at m=6, and is
+re-adjudicated to `KILL` at m=8 because the Benjamini-Hochberg threshold at rank 1 falls as
+the family grows — the exact behaviour the gate was built to have, visible in the committed
+record for the first time. It is also what makes the log 201 entries long for 200 hypotheses,
+and it exposed finding 33.
+
+This is the honest outcome, not a disappointing one: the whole claim is that the protocol
+reports what it found. Every hypothesis died at a preregistered bar, the bars are quoted per
+entry, and the one that briefly survived was demoted by the correction that exists to catch
+exactly that. Spec §16's example numbers — a PROMOTED factor at "IC 0.071, t 2.41, obs 187" —
+remain mathematically impossible (finding 7) and are still in the README and demo script,
+which is the remaining half of action 17.
+
+**Re-runnable by anyone, with no secrets.** Actions → Demo run → Run workflow. With
+`commit: false` it re-runs the session and fails if the decisions differ from the committed
+ones, leaving the tree alone — so the reproducibility claim is checked rather than asserted.
 
 ---
 
@@ -566,43 +630,56 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     **Correction to what this action previously claimed:** the frozen dataset is committed,
     but the decision log is **not** — `apps/agent/logs/` is empty. A fresh clone has all the
     data the protocol needs and no recorded session, which is action 17.
-12. **Deploy the frontend to Vercel** (Hobby tier, root directory `apps/web`) with
-    `NEXT_PUBLIC_API_BASE_URL=https://factor-prover-agent.onrender.com` set **during project
-    creation**, not afterwards — it is a `NEXT_PUBLIC_` variable, so it is inlined into the
-    bundle at build time and changing it later requires a redeploy.
-13. **Set `WEB_ORIGIN` on Render to the Vercel URL** once it exists. Until then the deployed
-    frontend is CORS-blocked (verified: no `Access-Control-Allow-Origin` is returned to a
-    foreign origin). The server keeps an explicit allowlist with no `origin: true` fallback,
-    so this is a required step, not a nicety.
+12. ~~Deploy the frontend to Vercel~~ — **done**. Live at `https://factorprover.vercel.app`,
+    Hobby tier, root directory `apps/web`, with
+    `NEXT_PUBLIC_API_BASE_URL=https://factor-prover-agent.onrender.com` set at project creation
+    as required — it is a `NEXT_PUBLIC_` variable, so it is inlined at build time.
+13. ~~Set `WEB_ORIGIN` on Render to the Vercel URL~~ — **done**, and committed as a literal in
+    `render.yaml` so the allowlist is reviewable config rather than a dashboard value. Verified
+    from outside: a request bearing `Origin: https://factorprover.vercel.app` is answered with a
+    matching `Access-Control-Allow-Origin`, where a foreign origin still gets none.
 14. Get the Groq key into the Render environment variables; add `GEMINI_API_KEY` when
-    convenient. Both are free and need no card.
+    convenient. Both are free and need no card. Until then `/api/status` reports
+    `deterministic_fallback: true` and the generator chain names each tier as `(no key)` —
+    honest, and reported rather than hidden, but it means the deployed demo shows the last-resort
+    enumerator rather than the LLM path the product is about.
 15. Add a lockfile (finding 25). It cannot be generated locally without an `npm install`, so
     the honest route is a small CI job or workflow-dispatch step that runs `npm install`,
     commits the resulting `package-lock.json`, and switches CI and Render to `npm ci`.
-16. Decide the `idle`-phase control (finding 26) and whether to enable paper trading
-    (finding 27). Both are demo-scope decisions, not correctness ones.
-14. Keep the local `_dbg*.mjs` / `_e2e.mjs` / `_scratch/` harnesses — they are gitignored, so
+16. Decide the `idle`-phase control (finding 26) and whether to enable paper trading (finding
+    27). Both are demo-scope decisions, not correctness ones. Note the redesign's Change 5 added
+    a Start button to the empty state, so check whether that already answers finding 26 before
+    adding anything.
+17. **Replace the README's and the demo script's numbers with the real run's output.** The log
+    half of this is **done** (2026-09-13, `6022039`); the copy half is not. Spec §16's example
+    numbers are mathematically impossible (finding 7) and must not survive into the submission.
+    The real distribution is in "The demo run" above — 200 attempted, 0 promoted, 200 killed,
+    with the per-bar tally.
+18. **Type-check the redesign in CI.** `lib/copy.ts` is covered by a local probe, but Node
+    cannot parse `.tsx` (`ERR_UNKNOWN_FILE_EXTENSION`), so the 4 components the redesign
+    touched have never been compiled. The push is the check. See finding 28.
+19. **`total_hypotheses_attempted_this_session` overstates the family (finding 33).** The field
+    counts log entries, not hypotheses, so it is wrong by the number of re-entries — one, in the
+    committed log. A proper fix separates the two quantities: an explicit dense `entry_index`
+    for the verifier's positional witness (check 6), and the true attempt count in the field
+    that names it, taken from the family registry that BH already uses. That touches the hashed
+    payload, `verify.ts`, the API contract and the log screen, and needs the log regenerated —
+    which is cheap, because the run is reproducible. Worth weighing against the remaining
+    deadline: the gate's arithmetic is unaffected, so this is a reporting defect, not a
+    statistical one.
+20. Keep the local `_dbg*.mjs` / `_e2e.mjs` / `_scratch/` harnesses — they are gitignored, so
     they cannot reach the repo, and they are the **only** way to re-verify the agent locally
     (no `npm install` is permitted). The requirement is "untracked", not "deleted": confirm
     with `git check-ignore`, and never `git add -f` them. Only `_regen-scratch.sh` is
     un-ignored, and it is referenced by the `.gitignore` comment as the way to regenerate
     `_scratch`. `_dbgseam.mjs`, `_dbggate.mjs` and `_dbgcover.mjs` added 2026-09-12 and
     confirmed ignored.
-15. Two findings from the frontend correctness pass that were reported but **not yet acted on**:
-    - `spotReturnSeries` in `signals.ts` has a doc comment claiming it "returns NaN" for a
-      missing point, but the body `continue`s, so the point is simply absent.
-    - `guard.ts` CHECK 5's `detail` string overstates its effect.
-    Neither changes behaviour; both are the kind of comment that becomes a lie after one edit.
-16. `Killed (N)` in the frontend header counts *hypotheses* while the table lists *log rows*,
+21. `Killed (N)` in the frontend header counts *hypotheses* while the table lists *log rows*,
     so `{killRows.length} of {killCount} shown` can read "51 of 50". Cosmetic, but it is a
-    number that does not mean what it says on the page that exists to be honest about numbers.
-17. **Produce the real demo run.** The submission needs a session that actually ran: a
-    committed `logs/decisions.jsonl` with genuine verdicts, and the numbers in the README and
-    demo script replaced with that run's real output. Spec §16's example numbers are
-    mathematically impossible (finding 7) and must not survive into the submission.
-18. **Type-check the redesign in CI.** `lib/copy.ts` is covered by a local probe, but Node
-    cannot parse `.tsx` (`ERR_UNKNOWN_FILE_EXTENSION`), so the 4 components the redesign
-    touched have never been compiled. The push is the check. See finding 28.
+    number that does not mean what it says on the page that exists to be honest about numbers —
+    and with the committed log it is no longer hypothetical: 201 rows against 200 hypotheses is
+    exactly this mismatch, caused by the same demotion that produced finding 33.
+22. ~~Two comments that had become lies~~ — **done 2026-09-13**, see finding 34.
 
 ---
 
@@ -628,7 +705,93 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     was one (fixed above), and two more were reported earlier and are still open: the
     `spotReturnSeries` doc comment claiming it "returns NaN" when the body `continue`s, and
     `guard.ts` CHECK 5's `detail` string. Comments that become lies after one edit are the
-    cheapest kind of dishonesty to fix and the easiest to leave.
+    cheapest kind of dishonesty to fix and the easiest to leave. **Both are now fixed — see
+    finding 34.**
+
+---
+
+## Findings from the demo run (2026-09-13)
+
+31. **The workflow that produces the submission artifact was pinned to a Node that cannot run
+    it, and a false comment said otherwise.**
+    `demo-run.yml` pinned Node 20 and then ran
+    `node --experimental-strip-types apps/agent/scripts/rebuild-manifest.ts --check`. Node 20
+    has no such flag, so the job died at its first real step — `node: bad option:
+    --experimental-strip-types`, exit code 9 — and the session never started. Not a failed
+    run: no run at all, so `apps/agent/logs/` stayed empty and the one artifact the submission
+    is judged on did not exist.
+    The pin was not arbitrary. It carried a comment justifying it: "20 … is the version the
+    Render service runs, so this session is produced by the same runtime that produces the live
+    one." **That was false.** `render.yaml` pins `NODE_VERSION` to `24`. And `ci.yml`'s
+    frozen-dataset job had been pinning 24 for this exact command all along, with a comment
+    saying the flag is why. So the workflow whose output becomes the record disagreed with both
+    the deploy config and the CI job that verifies the same script.
+    Fixed by pinning 24, which fixes the crash *and* makes the comment's original intent true —
+    the live service runs 24, so the session is now genuinely produced by the same runtime.
+    Verified before pushing on the same major: the command that exited 9 on the runner exits 0
+    locally on v24.14.0 and re-verifies the frozen dataset on the way past (33 entries, the
+    committed combined hash, every file intact). First green run: 200 hypotheses, 201 entries,
+    chain PASS.
+
+32. **Git does not run CI on the commit that produces the log.**
+    The demo run commits with the run's own `GITHUB_TOKEN`, and GitHub suppresses workflow runs
+    for pushes made with that token to prevent recursion. So `6022039` — the commit carrying
+    `decisions.jsonl` — has **no CI run at all**; `gh run list --commit 6022039` returns
+    nothing, and the author is `github-actions[bot]`.
+    The consequence is narrow but worth naming, because it is exactly backwards: the commit
+    that adds the artifact is the one commit CI cannot see. The `decision-log` job — written to
+    re-verify the chain on every push, and which until now had always reported "no log
+    committed yet" — therefore still has not verified a committed chain automatically. It runs
+    only on a human's push.
+    The bytes are not unverified: the workflow's own verify step ran `verify.ts` against the
+    file it had just written, and the commit step refuses to commit without a `[run] PASS`
+    line. But "CI re-verifies the committed log on every push" is not true of the commit that
+    created it. Any future regeneration via this workflow has the same hole.
+
+33. **`total_hypotheses_attempted_this_session` counts log ENTRIES, not hypotheses attempted.**
+    It is stamped `this.count + 1`, where `count` advances once per appended entry. That is
+    indistinguishable from a hypothesis count while one entry means one hypothesis, and it
+    stopped being so with the first demotion — which this run produced.
+    The committed log holds **201 entries for 200 distinct hypotheses**: H-0006 is promoted at
+    m=6 and re-adjudicated to KILL at m=8. The last entry therefore records
+    `total_hypotheses_attempted_this_session: 201`, while 200 hypotheses were tested. The
+    verifier makes the entry-count reading binding — check 6 fails unless the field equals the
+    entry's own 1-based position in the file — so the field *cannot* hold the true count while
+    any re-entry exists. A `CIRCUIT_BREAK` entry does the same thing for the same reason; the
+    writer's own comment notes that it "still advances by one" and reads that as a feature of
+    the dense-counter check, without noticing the field's name.
+    **The statistics are unaffected, and that is the point of separating them.** BH's `m` comes
+    from `family.size`, not from this field: the last entry's `bh_adjusted_threshold` of 0.011
+    is `(22/200) · 0.1`, i.e. m=200, the true attempt count. So the gate is honest and the
+    overstatement is confined to a reported field — on the log screen whose entire argument is
+    that the bar tightens as more hypotheses are tested. It overstates that family by the
+    number of re-entries.
+
+34. **Two comments that had become lies, fixed — and a third was hiding in a test.**
+    Both were reported (finding 30) and left; both are cheap and both are now closed.
+    - `spotReturnSeries` documented "Returns NaN where the lookback would cross a hole in the
+      series". The body `continue`s; no NaN is ever produced. `SignalPoint.value` is a
+      `number`, so a NaN *was* representable — the comment described a shape the function never
+      produced. The real behaviour is the more dangerous of the two: a NaN is visible to every
+      caller, whereas a dropped point is indistinguishable from one that was never on the
+      grid, so the array is simply shorter and `n_obs` lower with nothing to say why. That is
+      the same silent-difference class as finding 20, in the same function family.
+    - `guard.ts` CHECK 5 pushed a record reading "the two-phase confirm is SKIPPED and the
+      order is sent in a single confirmed call" whenever policy set `require_confirm: false`.
+      Nothing skipped it. `require_confirm` was read in exactly one place and changed no
+      control flow; with a hub present the guard still issued the unconfirmed call first and
+      still re-issued. The one sentence describing the check that stands between a validated
+      order and a sent one said the opposite of what happened.
+    - **The test already knew.** `executionGuard.test.ts` asserted
+      `hub.calls.map(c => c.confirm) === [false, true]` — proving the flow was *not* skipped —
+      while a comment above it explained that the detail "overstates the effect", and the
+      assertion pinned only the half of the string that was true
+      (`/require_confirm is false in policy/`). A comment that describes a false string
+      instead of removing it is the same defect one level up. Both halves are pinned now,
+      including a negative assertion on the exact false sentence
+      (`not.toMatch(/sent in a single confirmed call/)`), so the fix has teeth.
+    Neither change alters behaviour, which is why neither was urgent — and why neither would
+    ever have been caught by a test that only checks what the code does.
 
 ---
 
@@ -793,3 +956,38 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   opens the URL after any idle period now sees an empty product, however good the empty state
   is. The structural fix is action 17, and it has moved from housekeeping to the top of the
   list: **commit a real run's `decisions.jsonl`**.
+
+- **2026-09-13** — **The demo run exists. The submission's missing artifact is committed.**
+
+  `apps/agent/logs/decisions.jsonl`, 201 entries, committed as `6022039` by
+  `.github/workflows/demo-run.yml`. Session `S-1a6c5d66`, 200 hypotheses attempted, **0
+  promoted, 200 killed**, chain **PASS**. Every hypothesis died at a preregistered bar, and the
+  distribution is recorded above.
+
+  Getting there meant finding the reason it had never run. The workflow was pinned to Node 20
+  and ran `node --experimental-strip-types`, a flag Node 20 does not have — so it died at its
+  first real step with `node: bad option` and exit code 9, before the session began (finding
+  31). The pin carried a comment justifying it as "the version the Render service runs"; it
+  isn't, `render.yaml` pins 24, and `ci.yml` had been pinning 24 for that exact command all
+  along. One line changed, and the comment's original intent became true rather than merely
+  plausible.
+
+  The run also produced the first demotion in the project's history — H-0006 promoted at m=6,
+  re-adjudicated to KILL at m=8 as the BH threshold tightened — which is the gate behaving as
+  designed and is now visible in a committed record. It is what made the log 201 entries long
+  for 200 hypotheses, and that in turn exposed finding 33: the log's
+  `total_hypotheses_attempted_this_session` counts entries rather than hypotheses, so it
+  overstates the family by the number of re-entries. The BH correction is unaffected — its `m`
+  comes from the family registry, and the last entry's 0.011 threshold is `(22/200)·0.1`, i.e.
+  200 — so the gate is honest and the misstatement is confined to a reported field.
+
+  Also fixed, both left open since 2026-09-12: the `spotReturnSeries` doc comment promising a
+  NaN the body never produces, and `guard.ts` CHECK 5's detail claiming the two-phase confirm
+  was skipped when nothing skipped it. The guard's test had been asserting the half of that
+  string that was true while a comment above it described the half that wasn't (finding 34).
+
+  And one thing found rather than fixed: GitHub does not run CI on a push made with the
+  workflow's own `GITHUB_TOKEN`, so the commit that adds the log is the one commit CI never
+  sees (finding 32). The workflow verifies the file itself before committing it, so the bytes
+  are checked — but the `decision-log` CI job still has not verified a committed chain
+  automatically.

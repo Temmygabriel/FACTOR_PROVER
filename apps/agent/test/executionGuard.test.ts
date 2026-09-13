@@ -454,19 +454,27 @@ describe('CHECK 5 — the two-phase confirmation', () => {
     expect(out.detail).toContain('(no id)');
   });
 
-  it('notes the skipped two-phase flow when the policy disables require_confirm', async () => {
-    // `require_confirm: false` is recorded rather than silent — a skipped check
-    // that is not logged reads identically to a passed one. Note what the code
-    // actually does, though: the detail says the flow is "SKIPPED … sent in a
-    // single confirmed call", but with a hub present the guard still issues the
-    // unconfirmed call first. The note is right that the check was waived; the
-    // sentence overstates the effect.
+  it('records require_confirm=false without claiming the two-phase flow was skipped', async () => {
+    // `require_confirm: false` is recorded rather than silent — a setting that is
+    // waived with no record reads identically to one that was never seen.
+    //
+    // The record also has to be TRUE, and it was not. The detail used to say the
+    // flow was "SKIPPED … sent in a single confirmed call", while with a hub
+    // present the guard still issued the unconfirmed call first — so the one
+    // sentence describing the check that stands between a validated order and a
+    // sent one said the opposite of what happened. An earlier version of this
+    // comment described that overstatement instead of removing it, and asserted
+    // only the half that was true. Both halves are pinned now.
     const lax = { ...POLICY, execution_guard: { ...G, require_confirm: false } };
     const hub = twoPhaseHub();
     const out = await guard({ hub }, lax as GatePolicy).evaluate(ORDER);
     const c5 = out.checks.find((c) => c.check === 'CHECK_5_CONFIRMATION');
     expect(c5?.detail).toMatch(/require_confirm is false in policy/);
+    expect(c5?.detail).toMatch(/is NOT skipped/);
+    // The exact sentence that was false.
+    expect(c5?.detail).not.toMatch(/sent in a single confirmed call/);
     expect(out.allowed).toBe(true);
+    // And the behaviour the detail now describes: unconfirmed call, then confirmed.
     expect(hub.calls.map((c) => c.confirm)).toEqual([false, true]);
   });
 });

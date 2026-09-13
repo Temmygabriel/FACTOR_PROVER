@@ -328,9 +328,13 @@ export class ExecutionGuard {
         check: 'CHECK_5_CONFIRMATION',
         passed: true,
         detail:
-          'require_confirm is false in policy; the two-phase confirm is SKIPPED and the ' +
-          'order is sent in a single confirmed call. Recorded because a skipped check ' +
-          'that is not logged reads identically to a passed one.',
+          'require_confirm is false in policy. The two-phase confirm is NOT skipped: the ' +
+          'flag states whether confirmation is REQUIRED, and the guard does not read it as ' +
+          'permission to place an order with less confirmation than the spec describes. ' +
+          'With a hub configured the unconfirmed call is still issued first and the ' +
+          're-issuance still happens. Recorded here because a setting that is waived ' +
+          'silently reads identically to one that was never seen — a later CHECK_5 record ' +
+          'describes what actually happened.',
       });
     }
 
