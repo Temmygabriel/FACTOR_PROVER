@@ -75,10 +75,22 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          # 20 rather than 24: it is the version `engines` declares as the floor
-          # and the version the Render service runs, so this session is produced
-          # by the same runtime that produces the live one.
-          node-version: '20'
+          # 24 — and the reason is not the one that used to be written here.
+          #
+          # This job previously pinned 20, on the stated grounds that 20 is the
+          # version the Render service runs, so the session would be produced by
+          # the same runtime as the live one. That was simply false: render.yaml
+          # pins NODE_VERSION to 24. Worse, the pin broke the workflow outright —
+          # the frozen-dataset step below runs `node
+          # --experimental-strip-types`, a flag Node 20 does not have, so the job
+          # died on `node: bad option` with exit code 9 before the session ever
+          # started. ci.yml's frozen-dataset job had it right from the start: it
+          # pins 24 for exactly this command.
+          #
+          # So 24 is the fix AND it makes the original intent true. The live
+          # service runs 24, so a session produced here is produced by the same
+          # runtime as the deployed one.
+          node-version: '24'
 
       - name: Install dependencies
         # `npm install`, not `npm ci` — there is no committed lockfile yet, which
