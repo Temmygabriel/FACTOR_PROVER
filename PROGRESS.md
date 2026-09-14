@@ -37,7 +37,7 @@
 | Demo run workflow | **Green — was pinned to a Node that cannot run it. See finding 31.** |
 | **Committed demo run** | **DONE — 200 hypotheses, 201 entries, chain intact (`6022039`)... see "The demo run"** |
 | **Deployed site vs. committed record** | **FIXED — the copy is scoped to the session. Finding 35, verified live.** |
-| README / demo-script numbers | **NOT DONE — still spec §16's impossible example. Action 17, second half.** |
+| README / demo-script numbers | **DONE — `README.md` written (it did not exist), `docs/DEMO_SCRIPT.md` written from the committed log. Finding 36.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
 `factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
@@ -99,17 +99,26 @@ cut off by its own safety rule, and the runner prints a NOTE saying so.
 | 1 | `PROMOTE` |
 
 **Zero promotions, and one of them was promoted first.** H-0006 clears the gate at m=6, and is
-re-adjudicated to `KILL` at m=8 because the Benjamini-Hochberg threshold at rank 1 falls as
+re-adjudicated to `KILL` at **m=7** because the Benjamini-Hochberg threshold at rank 1 falls as
 the family grows — the exact behaviour the gate was built to have, visible in the committed
 record for the first time. It is also what makes the log 201 entries long for 200 hypotheses,
 and it exposed finding 33.
+
+*Corrected 2026-09-14:* this paragraph said "m=8" and that was wrong, in the same family as
+finding 33. `m` is the count of hypotheses that produced a p-value, not the count of log
+entries — E-0008 is the eighth *entry* but the seventh *testable* hypothesis, because E-0005
+was excluded for `insufficient_obs`. The entries state it themselves: E-0006's `gate_detail`
+reads "rank 1 of **6**" and E-0008's reads "rank 1 of **7**", and 0.1/6 = 0.016667 and
+0.1/7 = 0.014286 are exactly the `bh_adjusted_threshold` values logged against them. The
+correction matters because the wrong number was about to be written into the README.
 
 This is the honest outcome, not a disappointing one: the whole claim is that the protocol
 reports what it found. Every hypothesis died at a preregistered bar, the bars are quoted per
 entry, and the one that briefly survived was demoted by the correction that exists to catch
 exactly that. Spec §16's example numbers — a PROMOTED factor at "IC 0.071, t 2.41, obs 187" —
-remain mathematically impossible (finding 7) and are still in the README and demo script,
-which is the remaining half of action 17.
+remain mathematically impossible (finding 7). **Fixed 2026-09-14:** the README is written and
+`docs/DEMO_SCRIPT.md` is written, both from the committed log's actual numbers. See finding 36
+for why replacing the numbers was not sufficient.
 
 **Re-runnable by anyone, with no secrets.** Actions → Demo run → Run workflow. With
 `commit: false` it re-runs the session and fails if the decisions differ from the committed
@@ -651,11 +660,13 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     27). Both are demo-scope decisions, not correctness ones. Note the redesign's Change 5 added
     a Start button to the empty state, so check whether that already answers finding 26 before
     adding anything.
-17. **Replace the README's and the demo script's numbers with the real run's output.** The log
-    half of this is **done** (2026-09-13, `6022039`); the copy half is not. Spec §16's example
-    numbers are mathematically impossible (finding 7) and must not survive into the submission.
-    The real distribution is in "The demo run" above — 200 attempted, 0 promoted, 200 killed,
-    with the per-bar tally.
+17. ~~**Replace the README's and the demo script's numbers with the real run's output.**~~
+    **DONE 2026-09-14.** The log half was done 2026-09-13 (`6022039`). The copy half is now
+    done too: `README.md` (which **did not exist** — see finding 36) and `docs/DEMO_SCRIPT.md`
+    are both written from the committed log's actual numbers. Spec §16's impossible example is
+    gone from every submission-facing document. `factor_prover_build_spec.md` itself is left
+    untouched as the historical input of record; `docs/DEMO_SCRIPT.md` supersedes its §16 and
+    says so.
 18. **Type-check the redesign in CI.** `lib/copy.ts` is covered by a local probe, but Node
     cannot parse `.tsx` (`ERR_UNKNOWN_FILE_EXTENSION`), so the 4 components the redesign
     touched have never been compiled. The push is the check. See finding 28.
@@ -859,6 +870,52 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     own cursor. Verified on the redeployed services: `/api/leaderboard` returns the scoped
     sentence, and the deployed frontend bundle contains "attempted in this session" and no longer
     contains any of the three unscoped strings.
+
+36. **The README did not exist, and the demo script described three events that never happened.**
+    Action 17 had been written as "replace the README's and the demo script's numbers", which
+    presumed both documents existed. Neither did:
+
+    - **There is no README in the repository.** Not a stale one, not a thin one — `git ls-files`
+      lists no README at any path. A judge arriving at the repository lands on a directory
+      listing. Action 17's instruction to *replace* its numbers could never have been carried
+      out, and the task had been carried for three days as though it were a find-and-replace.
+
+    - **The "demo script" is spec §16**, inside `factor_prover_build_spec.md`. Replacing its
+      numbers is not sufficient, because three of its twelve steps describe events the committed
+      session does not contain. Step 7 shows a PROMOTED hypothesis ("43 hypotheses attempted, 1
+      promoted"); the run promoted zero. Step 8 shows an out-of-sample LOCKED_TEST number on that
+      promoted factor; LOCKED_TEST was never read, because nothing earned the read. Step 10 shows
+      a paper order executing through Agent Hub; no order was ever issued, because the guard
+      never had a promotion to act on.
+
+    **The fabricated numbers were the smaller half of the problem.** Finding 7 established that
+    §16's example — "IC 0.071, t 2.41, obs 187" — is arithmetically impossible, and the fix that
+    suggested itself was to swap in real figures. Doing only that would have left a demo script
+    that is numerically true and still describes a session that cannot occur: a script whose
+    middle act is a promotion, filmed against a run that promoted nothing. A presenter following
+    it would have had to invent a result on camera, which is precisely the failure the project
+    exists to argue against.
+
+    **Written instead:** `README.md` (new) and `docs/DEMO_SCRIPT.md` (new, and it declares itself
+    the supersession of §16). The demo's step 7 is rebuilt around the H-0006 arc — the one
+    hypothesis that was promoted and then demoted two entries later, with its own IC, t-stat and
+    p-value unchanged and only the BH threshold moving beneath it. Step 8 replaces the
+    out-of-sample reveal with the honest and stronger beat: LOCKED_TEST is still sealed, and
+    reading it now on H-0006 would be selecting the hypothesis *because* it looked best, which is
+    the exact effect the partition exists to prevent. Step 10 states plainly that no order exists
+    and why that is the safety property working.
+
+    `factor_prover_build_spec.md` is left untouched as the historical input of record. The spec
+    records what was planned; the new documents record what happened, and the difference between
+    them is the submission.
+
+    Same family as 33, 34 and 35, one level further out: not a wrong number in a document, but
+    documents that asserted the existence of a result before one existed.
+
+    **Also corrected here:** the demo-run paragraph above said H-0006 was re-adjudicated at
+    "m=8". It was m=7 — the eighth *entry*, seventh *testable* hypothesis. Caught while mining
+    the log for real numbers to write into the README, which is the argument for writing
+    documents from the data rather than from a summary of the data.
 
 ---
 
@@ -1107,3 +1164,39 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   `)`) and catches each with the right line. **Both halves were needed**: a checker that never
   fires proves nothing, and neither does one that fires on correct code. All 22 files now report
   balanced, and CI's typecheck and build run green on both Node 20 and 24.
+
+- **2026-09-14** — **Wrote the two submission-facing documents that action 17 had been waiting
+  on, and found that neither existed.** Action 17 was phrased as "replace the README's and the
+  demo script's numbers", which presumed both documents were there to be corrected. `git ls-files`
+  lists no README at any path — a judge arriving at the repository lands on a directory listing —
+  and the "demo script" turned out to be spec §16, inside the build spec.
+
+  Replacing §16's numbers would not have been enough, and this is the finding (36). Three of its
+  twelve steps describe events the committed session does not contain: a PROMOTED hypothesis, an
+  out-of-sample LOCKED_TEST number computed on that promoted factor, and a paper order executing
+  through Agent Hub. The run promoted zero, never read LOCKED_TEST, and issued no order. Swapping
+  in real figures would have produced a script that is numerically true and still unfilmable —
+  whose middle act is a promotion that does not exist, in a project whose entire claim is that it
+  does not invent results. The fabricated numbers were the smaller half of the problem.
+
+  `README.md` and `docs/DEMO_SCRIPT.md` are written from the committed log rather than from a
+  summary of it, which is how the m=8 error surfaced: the demo-run paragraph above said H-0006 was
+  demoted at "m=8", but E-0008 is the eighth *log entry* and the seventh *testable* hypothesis —
+  E-0005 was excluded for `insufficient_obs`. Both entries state the real family size themselves
+  ("rank 1 of 6", "rank 1 of 7"), and 0.1/6 and 0.1/7 are exactly the logged thresholds. The
+  README now carries the correct number, and the demo script's step 7 is built on the arc: the
+  hypothesis that cleared every preregistered check at m=6 and was killed at m=7 with its IC,
+  t-stat and p-value unchanged, only the bar moving beneath it.
+
+  Step 8 was rewritten the other way round from the spec's intent, and is a better beat for it.
+  LOCKED_TEST stays sealed: nothing was promoted, so nothing earned the read, and running it now
+  on H-0006 would mean choosing the hypothesis *because* it looked best — the selection effect the
+  partition exists to prevent. Step 10 says plainly that no order exists, and that this is the
+  safety property working rather than a gap. `factor_prover_build_spec.md` is left untouched as
+  the historical input; the new script declares itself its supersession.
+
+  Two README claims were wrong on first draft and were corrected against the repository before
+  committing: it said Node 24 alone, when CI tests 20 and 24, and it said the log verifier needed
+  no dependencies beyond Node, when it runs through `tsx`. Both were the same failure mode as
+  everything above — a sentence asserting more than the code supports — this time in a document
+  written specifically to avoid it.
