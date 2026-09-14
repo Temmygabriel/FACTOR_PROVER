@@ -36,7 +36,7 @@
 | UI redesign brief (8 changes) | **6 of 7 implementable changes done; Change 8 has no target route** |
 | Demo run workflow | **Green — was pinned to a Node that cannot run it. See finding 31.** |
 | **Committed demo run** | **DONE — 200 hypotheses, 201 entries, chain intact (`6022039`)... see "The demo run"** |
-| **Deployed site vs. committed record** | **CONTRADICTS ITSELF — "0 attempted" beside a 201-entry table. Finding 35, action 23.** |
+| **Deployed site vs. committed record** | **FIXED — the copy is scoped to the session. Finding 35, verified live.** |
 | README / demo-script numbers | **NOT DONE — still spec §16's impossible example. Action 17, second half.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
@@ -681,18 +681,14 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     and with the committed log it is no longer hypothetical: 201 rows against 200 hypotheses is
     exactly this mismatch, caused by the same demotion that produced finding 33.
 22. ~~Two comments that had become lies~~ — **done 2026-09-13**, see finding 34.
-23. **Stop the deployed site contradicting itself (finding 35).** `hypotheses_attempted` counts
-    this process's attempts and `/api/log`'s `total` counts the committed file's entries; both
-    are correct and the UI prints them as if they were the same quantity, so a cold deployment
-    says "No hypothesis has been tested yet" above a table of 201. The fix is a decision before
-    it is a patch — either `/api/status` reports the live count and the committed count as two
-    named fields, or the UI reads both and names which is which. Cheapest honest version: give
-    `EmptyBench` the log reading (it already has the `StatusResponse`, and `page.tsx` already
-    polls `/api/log`), and scope the heading to the live session while stating what the
-    committed record holds. Same edit should name which session the header's id refers to, since
-    two are on screen at once. Touches `app/page.tsx`, `components/EmptyBench.tsx`,
-    `components/NavBar.tsx` (the strip's `#empty-bench` target) and `session/loop.ts:992`'s
-    `empty_reason`; the frontend is not type-checked locally, so the push is the check.
+23. ~~Stop the deployed site contradicting itself~~ — **done 2026-09-14**, see finding 35. The
+    copy is scoped to the session everywhere it was unscoped, `EmptyBench` is told the committed
+    total, and the two `??` fallbacks that a booted process's zero was suppressing are now `||`.
+    Remaining and deliberately NOT done: the header still names the live session's id while the
+    rows beneath come from the committed run, so two sessions are on screen at once and only one
+    is named. Fixing that properly means the row projection carries `session_id` — a wire-contract
+    change, not a copy change — and it is worth doing only if the log screen needs to distinguish
+    runs anyway.
 
 ---
 
@@ -850,6 +846,19 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
     Same family as 33 and 34: **the words assert more than the data supports.** 33 is a field
     whose name overstates its value, 34 is comments that had become lies, 35 is interface copy
     that reads as a claim about the project when it is a claim about one process.
+
+    **Fixed the same day.** The server's distinction was kept — both endpoints were right — and
+    the copy was scoped to the session: the empty bench's heading now reads "No hypothesis has
+    been tested in this session yet" and the panel is handed the committed total so it can state
+    it rather than report an absence; the session header reads "N attempted in this session"; the
+    leaderboard names which count its numbers are counting; and `empty_reason` and the null-result
+    copy are scoped the same way. Two `??` fallbacks became `||`, because zero is precisely the
+    value those fallbacks exist for and `??` therefore never fired. The "Show all" control on the
+    kill table was gated on `killCount > killPageSize`, which a zero suppressed — so the two
+    hundred committed kills behind the first page were unreachable; it is now gated on the log's
+    own cursor. Verified on the redeployed services: `/api/leaderboard` returns the scoped
+    sentence, and the deployed frontend bundle contains "attempted in this session" and no longer
+    contains any of the three unscoped strings.
 
 ---
 
@@ -1068,3 +1077,33 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   is the same defect family as 33 (a field whose name overstates its value) and 34 (comments
   that had become lies): words asserting more than the data supports, which is the defect this
   whole submission is built to hunt in other people's factors.
+
+- **2026-09-14** — Closed finding 35 end to end, and closed a real gap in how the frontend is
+  verified. The copy that contradicted the committed log is scoped to the session everywhere it
+  was unscoped, two `??` fallbacks that a booted process's zero was silently suppressing are now
+  `||`, and the leaderboard's "Show all" control — previously unreachable on a cold deployment,
+  which is the only state the deployed service is ever in — is gated on the log's own cursor
+  instead. Confirmed on the redeployed services rather than on the diff: `/api/leaderboard` now
+  returns the scoped sentence, and the deployed Vercel bundle contains "attempted in this
+  session" while containing none of the three unscoped strings it replaced.
+
+  The larger item is `apps/web/scripts/check-tsx-structure.mjs`. There is no `npm install` here,
+  so `.tsx` cannot be compiled and — unlike `.ts`, which Node's type stripping will run — cannot
+  even be parsed: Node rejects the extension outright. Every frontend edit was therefore
+  unverified until CI ran, which meant the person typing a dropped `</div>` found out from a
+  build minutes later rather than from the machine in front of them. The new script checks
+  bracket and JSX-tag nesting, which is the part of that gap a source-text check can close. It is
+  explicitly not a type-check and says so in its own output; CI is still the gate for that.
+
+  It took four iterations to become trustworthy, and the iterations are the interesting part.
+  Written naively it reported **twelve of twenty-two files as broken**, all false. Each fix came
+  from reading the reports instead of trusting them: generic type arguments (`Record<SessionPhase,
+  string>`, `useState<VerifyState>(…)`) look exactly like JSX tags; closing tags needed exempting
+  from that same rule, because `</h2>` follows JSX text ending in a full stop and every heading in
+  the codebase desynchronised the stack; `<></>` was scanned past its own `>`; and a prose comment
+  between two JSX props — `// the log's own cursor` — opened a phantom string at the apostrophe
+  that ran to the next apostrophe in the file and swallowed the tag's terminator. It was then
+  tested against three separately injected breakages (a dropped `</div>`, a dropped `}`, a stray
+  `)`) and catches each with the right line. **Both halves were needed**: a checker that never
+  fires proves nothing, and neither does one that fires on correct code. All 22 files now report
+  balanced, and CI's typecheck and build run green on both Node 20 and 24.
