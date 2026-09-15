@@ -213,7 +213,7 @@ From spec §17, with the two items that cannot be satisfied honestly:
 | Item | Status |
 |---|---|
 | Public repository | ✅ |
-| `BITGET_PAPER_TRADING=true` in production | ✅ |
+| `BITGET_PAPER_TRADING=true` in production | ✅ declared in `render.yaml`, so it is reviewable config rather than a dashboard value. It was **not** set before 2026-09-14, while this row already claimed a tick — corrected. Note it does not authorise an order: `ENABLE_EXECUTION` and the Bitget credentials remain absent, and the guard's later checks still refuse |
 | `partitions.json` committed | ✅ |
 | `gate_policy.json` committed | ✅ |
 | `decisions.jsonl` committed | ✅ 201 entries |

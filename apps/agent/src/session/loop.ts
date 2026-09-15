@@ -44,7 +44,12 @@ import {
   type AppendContext,
   type DecisionLogEntry,
 } from '../log/decisions.js';
-import { HypothesisGenerator, describeChain, loadGeneratorConfig } from '../llm/provider.js';
+import {
+  HypothesisGenerator,
+  countsAsProviderFailure,
+  describeChain,
+  loadGeneratorConfig,
+} from '../llm/provider.js';
 import { CircuitBreaker, type BreakerState } from '../circuit/breaker.js';
 import { ExecutionGuard, type GuardOutcome, type OrderIntent } from '../execution/guard.js';
 import { fetchSpotPrice } from '../execution/prices.js';
@@ -416,7 +421,12 @@ export class SessionLoop {
     // breaker. An unconfigured tier is a deployment choice, not an outage, and
     // counting it would trip the breaker after three iterations of a session
     // that was working as designed.
-    if (outcome.tierFailures.some((f) => f.kind === 'transport')) {
+    //
+    // `rate_limited` is excluded for the same reason: the provider answered, it
+    // just answered "too fast". Counting it would halt a healthy session and
+    // attribute the halt to a provider outage that never happened. The rule
+    // itself lives in provider.ts so it can be tested without a running loop.
+    if (countsAsProviderFailure(outcome.tierFailures)) {
       this.breaker.recordLlmFailure();
     } else {
       this.breaker.recordLlmSuccess();

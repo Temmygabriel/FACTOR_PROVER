@@ -20,8 +20,14 @@
  *   boundary. They bound spend, so their natural period is a day.
  *
  *   CONSECUTIVE counters (LLM failures) reset on success, not on a clock. Three
- *   failures in a row means the provider is down; three failures spread over an
- *   hour with successes between them means nothing at all.
+ *   failures in a row means no model tier could be reached; three failures
+ *   spread over an hour with successes between them means nothing at all.
+ *
+ *   What feeds that counter is deliberately narrow. Only a tier that was called
+ *   and failed for a transport reason counts. A missing API key is a deployment
+ *   choice, and a 429 is this loop's own request rate — neither is an outage, and
+ *   recording either as one halts a session that was working while blaming a
+ *   provider that was healthy. See `TierFailureKind` in src/llm/provider.ts.
  *
  * The degeneracy check is the interesting one. It does not look at one
  * hypothesis, it looks at the RECENT SHAPE of the session: if 4 of the last 5
@@ -233,9 +239,11 @@ export class CircuitBreaker {
     if (this.counters.consecutive_llm_failures >= r.max_consecutive_llm_failures) {
       return this.trip(
         'max_consecutive_llm_failures',
-        `${this.counters.consecutive_llm_failures} consecutive LLM failures ` +
-          `(limit ${r.max_consecutive_llm_failures}); the provider is down and the loop ` +
-          `is generating hypotheses it cannot attribute to a model`,
+        `${this.counters.consecutive_llm_failures} consecutive iterations in which no ` +
+          `model tier could be reached (limit ${r.max_consecutive_llm_failures}); the loop ` +
+          `is generating hypotheses it cannot attribute to a model. Rate limits are not ` +
+          `counted here: a 429 means this loop asked faster than its budget allows, which ` +
+          `is a fact about our pacing and not about the provider`,
       );
     }
 

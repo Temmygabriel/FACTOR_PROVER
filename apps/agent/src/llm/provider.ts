@@ -12,12 +12,19 @@
  * lives in gate_policy.json and is applied by src/gate/gate.ts. The chain's only
  * authority is over WHICH QUESTION GETS ASKED NEXT.
  *
- * TWO DISTINCT FAILURE KINDS, DELIBERATELY NOT CONFLATED:
+ * THREE DISTINCT FAILURE KINDS, DELIBERATELY NOT CONFLATED:
  *
  *   TRANSPORT FAILURE — the request failed, timed out, or the reply was not
  *   parseable JSON. Nothing was learned about markets. This is a tier failure:
  *   the chain advances and the next tier tries. It must never become a KILL,
  *   because a KILL has to be a statement about the idea, not about the weather.
+ *
+ *   RATE LIMIT — the provider was healthy and refused because this loop asked
+ *   faster than its budget allows. This is a fact about OUR pacing, not about
+ *   the provider, and the two must not be recorded as each other. It does not
+ *   advance the provider circuit, and it does not count as an outage to a caller
+ *   deciding whether the session should halt. The chain waits for the reset hint
+ *   and re-sends, up to a bounded number of times.
  *
  *   SCHEMA FAILURE — the model returned well-formed JSON that violates the
  *   hypothesis schema. The idea is genuinely malformed (an unknown signal, a
@@ -65,6 +72,21 @@ export interface GeneratorConfig {
   allowDeterministicFallback: boolean;
   /** Consecutive transport failures before the chain stops calling models. */
   maxConsecutiveFailures: number;
+  /**
+   * How many times to re-send a request the provider rate-limited, within the
+   * same iteration, before treating the tier as unavailable for that iteration.
+   *
+   * Bounded on purpose. A rate limit that outlasts a couple of retries is a
+   * pacing problem, and no amount of retrying fixes a loop that is asking faster
+   * than its budget allows — the loop's own iteration delay has to. Retrying
+   * forever would convert "too fast" into "hung".
+   */
+  maxRateLimitRetries: number;
+  /**
+   * Ceiling on a single rate-limit wait. A provider that returns an absurd reset
+   * hint must not be able to stall a session for an hour.
+   */
+  maxRateLimitWaitMs: number;
 }
 
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
@@ -110,7 +132,24 @@ export function loadGeneratorConfig(): GeneratorConfig {
     allowDeterministicFallback:
       (envOrNull('LLM_ALLOW_DETERMINISTIC_FALLBACK') ?? 'true').toLowerCase() !== 'false',
     maxConsecutiveFailures,
+    maxRateLimitRetries: posIntOr('LLM_RATE_LIMIT_RETRIES', 2),
+    maxRateLimitWaitMs: posIntOr('LLM_RATE_LIMIT_MAX_WAIT_MS', 65_000),
   };
+}
+
+/**
+ * A positive integer from the environment, or the default.
+ *
+ * Rejects zero and negatives rather than clamping them: `LLM_RATE_LIMIT_RETRIES=0`
+ * is a reasonable thing to want (disable retrying) but a negative is a typo, and
+ * silently turning a typo into a different number is how a deployment ends up
+ * doing something nobody chose.
+ */
+function posIntOr(name: string, fallback: number): number {
+  const raw = envOrNull(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,19 +182,39 @@ function redact(message: string, secrets: Array<string | null>): string {
  *
  * The distinction is load-bearing and cannot be recovered from the message
  * text: 'unavailable' means the tier was never called, 'transport' means it was
- * called and failed, 'circuit_open' means it was skipped because the chain had
- * already given up. A caller counting provider failures has to count only
- * 'transport' — counting 'unavailable' as a failure would make a deployment
- * with no API keys configured (a legitimate, supported configuration in which
- * the deterministic enumerator carries the session) trip the breaker after
- * three iterations and halt a session that was working exactly as designed.
+ * called and the provider failed, 'rate_limited' means it was called and refused
+ * because we asked too often, 'circuit_open' means it was skipped because the
+ * chain had already given up.
+ *
+ * A caller counting provider failures has to count only 'transport'. Counting
+ * 'unavailable' as a failure would make a deployment with no API keys configured
+ * (a legitimate, supported configuration in which the deterministic enumerator
+ * carries the session) trip the breaker after three iterations and halt a
+ * session that was working exactly as designed. Counting 'rate_limited' would
+ * attribute a pacing decision made by this loop to an outage at the provider —
+ * which is precisely the misattribution that halted the first live session.
  */
-export type TierFailureKind = 'unavailable' | 'transport' | 'circuit_open';
+export type TierFailureKind = 'unavailable' | 'transport' | 'rate_limited' | 'circuit_open';
 
 export interface TierFailure {
   tier: GeneratorTier;
   kind: TierFailureKind;
   message: string;
+}
+
+/**
+ * Did this iteration fail because a provider could not be reached?
+ *
+ * The single place that question is answered. `src/session/loop.ts` uses it to
+ * decide whether a failed iteration counts against the session breaker, and it
+ * is exported so the rule can be tested directly instead of only through a
+ * running loop. The distinction it encodes — "the provider is down" versus "we
+ * asked too fast" — is the difference between halting a healthy session and
+ * pacing it, and it should not be re-derived by each caller from an array of
+ * kind strings.
+ */
+export function countsAsProviderFailure(failures: readonly TierFailure[]): boolean {
+  return failures.some((f) => f.kind === 'transport');
 }
 
 export interface GenerationOutcome {
@@ -228,6 +287,48 @@ function temperatureFor(attemptIndex: number): number {
   return 0.80 + ((attemptIndex % 5) * 0.04) + ((attemptIndex % 3) * 0.01);
 }
 
+// ---------------------------------------------------------------------------
+// Rate limiting
+// ---------------------------------------------------------------------------
+
+/**
+ * Wait used when a rate-limited response carried no usable reset hint.
+ *
+ * A minute is the window Groq's free tier measures tokens over, so it is the
+ * shortest wait that can plausibly help — and this path is only reached when the
+ * provider declined to say, which is itself a reason to be conservative.
+ */
+const DEFAULT_RATE_LIMIT_WAIT_MS = 60_000;
+
+/**
+ * Added to every rate-limit wait.
+ *
+ * The reset hint describes the bucket at the moment the 429 was GENERATED, not
+ * the moment this process reads it, so by the time the response has been parsed
+ * some of the wait has already elapsed — and re-sending right on the boundary
+ * races the refill. A fixed margin covers that without introducing randomness,
+ * which matters because the file header promises nothing here is random and the
+ * pacing path has no business breaking that promise.
+ */
+const RATE_LIMIT_MARGIN_MS = 2_000;
+
+/**
+ * Did this failure come from being asked too often, rather than from a provider
+ * that is down?
+ *
+ * Narrowed to `ProviderError` on purpose. An arbitrary error whose message
+ * happens to contain "429" — a schema error, a file error, a gRPC-ish string
+ * from somewhere else — must not be able to talk the chain out of counting a
+ * real outage.
+ */
+function isRateLimited(err: unknown): err is ProviderError {
+  return err instanceof ProviderError && err.rateLimited;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export class HypothesisGenerator {
   private readonly cfg: GeneratorConfig;
   private readonly system: string;
@@ -295,26 +396,55 @@ export class HypothesisGenerator {
           const text = await this.callTier(tier, { user, attemptIndex });
           return this.finishFromText(tier, text, tierFailures, circuitWasOpen);
         } catch (err) {
-          // Transport failure. Advance the chain; do not let it become a KILL.
-          this.consecutiveFailures += 1;
-          const message = redact(
-            err instanceof ProviderError || err instanceof Error
-              ? err.message
-              : String(err),
-            secrets,
-          );
-          tierFailures.push({ tier, kind: 'transport', message });
+          const failure = err instanceof Error ? err : new Error(String(err));
 
-          if (this.circuitOpen) {
+          if (!isRateLimited(failure)) {
+            // Transport failure. Advance the chain; do not let it become a KILL.
+            if (this.noteTransportFailure(tier, failure, secrets, tierFailures)) break;
+            continue;
+          }
+
+          const retry = await this.retryWhileRateLimited(tier, { user, attemptIndex }, failure);
+
+          if ('text' in retry) {
+            // Recorded even though it succeeded. A silent 47-second wait is
+            // exactly the kind of thing that belongs in the record rather than
+            // being inferred from a gap between timestamps.
             tierFailures.push({
               tier,
-              kind: 'circuit_open',
-              message:
-                `circuit opened after ${this.consecutiveFailures} consecutive failures; ` +
-                `remaining model tiers skipped`,
+              kind: 'rate_limited',
+              message: redact(
+                `${failure.message} — waited, then the same tier answered within ` +
+                  `the same iteration`,
+                secrets,
+              ),
             });
-            break;
+            return this.finishFromText(tier, retry.text, tierFailures, circuitWasOpen);
           }
+
+          if (!isRateLimited(retry.err)) {
+            // The bucket refilled and the provider then failed for a reason that
+            // has nothing to do with our request rate. That IS an outage.
+            if (this.noteTransportFailure(tier, retry.err, secrets, tierFailures)) break;
+            continue;
+          }
+
+          // Still throttled after every retry. Record it as what it is — our own
+          // request rate — and do NOT advance the provider circuit. Counting
+          // this as a transport failure is what halted the first live session:
+          // the session breaker tripped and its message then blamed "the
+          // provider is down" for a pace this loop chose. The next tier may be a
+          // different provider with an untouched bucket, so the chain continues
+          // rather than breaking.
+          tierFailures.push({
+            tier,
+            kind: 'rate_limited',
+            message: redact(
+              `${failure.message} — still rate limited after ` +
+                `${this.cfg.maxRateLimitRetries} retries; tier skipped for this iteration`,
+              secrets,
+            ),
+          });
         }
       }
     }
@@ -338,6 +468,75 @@ export class HypothesisGenerator {
       tierFailures,
       circuitOpen: circuitWasOpen,
     };
+  }
+
+  /**
+   * Record a genuine transport failure and advance the provider circuit.
+   *
+   * Returns true when the chain should stop calling further model tiers — which
+   * happens exactly once, on the failure that opens the circuit. Anything that
+   * means "try the next tier" returns false.
+   */
+  private noteTransportFailure(
+    tier: GeneratorTier,
+    err: Error,
+    secrets: Array<string | null>,
+    tierFailures: TierFailure[],
+  ): boolean {
+    this.consecutiveFailures += 1;
+    tierFailures.push({ tier, kind: 'transport', message: redact(err.message, secrets) });
+
+    if (!this.circuitOpen) return false;
+
+    tierFailures.push({
+      tier,
+      kind: 'circuit_open',
+      message:
+        `circuit opened after ${this.consecutiveFailures} consecutive failures; ` +
+        `remaining model tiers skipped`,
+    });
+    return true;
+  }
+
+  /**
+   * Wait out a rate limit and re-send, up to `maxRateLimitRetries` times.
+   *
+   * Returns the tier's reply, or the last error it produced — which may be
+   * another 429 (still throttled) or something else entirely (the bucket
+   * refilled and the provider then failed for an unrelated reason). The caller
+   * decides which, because the two mean opposite things about the provider.
+   *
+   * The wait honours the provider's own reset hint, which is the only number
+   * that knows how full the bucket is, and is capped so a bad header cannot hang
+   * a session. No randomness is used: the file header promises replay
+   * determinism and pacing has no reason to be an exception.
+   */
+  private async retryWhileRateLimited(
+    tier: GeneratorTier,
+    args: { user: string; attemptIndex: number },
+    first: ProviderError,
+  ): Promise<{ text: string } | { err: Error }> {
+    let err: Error = first;
+
+    for (let attempt = 1; attempt <= this.cfg.maxRateLimitRetries; attempt += 1) {
+      const hinted = err instanceof ProviderError && err.retryAfterMs !== undefined
+        ? err.retryAfterMs
+        : DEFAULT_RATE_LIMIT_WAIT_MS;
+      const waitMs = Math.min(hinted + RATE_LIMIT_MARGIN_MS, this.cfg.maxRateLimitWaitMs);
+
+      await sleep(waitMs);
+
+      try {
+        return { text: await this.callTier(tier, args) };
+      } catch (next) {
+        err = next instanceof Error ? next : new Error(String(next));
+        // A non-429 error during a rate-limit retry is not a rate limit, and
+        // retrying it on this schedule would be waiting for the wrong thing.
+        if (!isRateLimited(err)) break;
+      }
+    }
+
+    return { err };
   }
 
   /** Dispatch to the right client. Returns raw model text. */

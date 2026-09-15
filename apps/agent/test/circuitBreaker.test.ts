@@ -4,8 +4,8 @@
  * The two counter kinds behave differently and the difference is the whole
  * design: DAILY counters reset at the UTC day boundary because they bound
  * spend, and CONSECUTIVE counters reset on success because three failures in a
- * row means the provider is down while three failures spread across an hour with
- * successes between them means nothing at all.
+ * row means no model tier could be reached while three failures spread across an
+ * hour with successes between them means nothing at all.
  *
  * The trip itself is the third thing: a trip is NOT cleared by the day rollover.
  * A breaker that reset itself overnight would defeat its own purpose, which is
@@ -180,7 +180,7 @@ describe('max_consecutive_llm_failures', () => {
     b.recordLlmFailure();
     expect(b.check().tripped).toBe(true);
     expect(b.check().reason).toBe('max_consecutive_llm_failures');
-    expect(b.check().detail).toMatch(/the provider is down/);
+    expect(b.check().detail).toMatch(/no model tier could be reached/);
   });
 
   it('does NOT trip on failures spread across successes', () => {
@@ -219,8 +219,8 @@ describe('max_consecutive_llm_failures', () => {
 
   it('is checked after the three daily budgets', () => {
     // Ordering is deliberate: "the day's budget is gone" is a more actionable
-    // thing to surface than "the provider is down", because it is a decision the
-    // operator can act on without waiting for anyone else.
+    // thing to surface than "no model tier could be reached", because it is a
+    // decision the operator can act on without waiting for anyone else.
     const b = new CircuitBreaker(POLICY);
     for (let i = 0; i < R.max_consecutive_llm_failures; i++) b.recordLlmFailure();
     for (let i = 0; i < R.max_hypotheses_per_day; i++) b.recordHypothesis();

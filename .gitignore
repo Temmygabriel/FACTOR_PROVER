@@ -55,3 +55,10 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
+
+# Working briefs handed to me, not project artefacts. The repo is what judges
+# read; these are notes about how to build it, and they name files that do not
+# exist and changes that were already made. Ignored rather than left untracked
+# so a `git add .` cannot publish them by accident.
+factor_prover_ui_redesign_brief.md
+factor_prover_ui_fix_exact.md

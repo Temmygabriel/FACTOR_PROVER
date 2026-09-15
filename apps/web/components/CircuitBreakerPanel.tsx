@@ -183,7 +183,7 @@ export function CircuitBreakerPanel({
                 label="consecutive LLM failures"
                 value={counters.consecutive_llm_failures}
                 limit={BREAKER_LIMITS.max_consecutive_llm_failures}
-                tip="Resets on a success, not on a clock. Three in a row means the provider is down and the loop is generating hypotheses it cannot attribute to a model."
+                tip="Resets on a success, not on a clock. Three in a row means no model tier could be reached and the loop is generating hypotheses it cannot attribute to a model. Rate limits are not counted — a 429 means this loop asked too fast, which is not a provider outage."
               />
             </dl>
           ) : (

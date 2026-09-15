@@ -43,13 +43,82 @@ export class ProviderError extends Error {
   status?: number;
   /** True when the failure is worth retrying on the next tier. */
   retryable: boolean;
+  /**
+   * How long the provider asked us to wait before re-sending, in milliseconds.
+   * Set only on a rate limit, and only when the response carried a usable hint.
+   *
+   * This is deliberately NOT `Retry-After`. Measured against Groq's free tier on
+   * 2026-09-14, a single 429 carried BOTH `retry-after: 3` and
+   * `x-ratelimit-reset-tokens: 46.755s`. They disagree because `Retry-After`
+   * describes when the request may be re-sent while the token bucket needs most
+   * of a minute to refill — so a client that honours the short one re-sends
+   * almost immediately, collects another 429, and turns a rate limit into a hot
+   * loop. The reset hint is the number that reflects capacity actually
+   * returning, so it wins and `Retry-After` is only a fallback.
+   */
+  retryAfterMs?: number;
 
-  constructor(message: string, opts: { status?: number; retryable?: boolean } = {}) {
+  constructor(
+    message: string,
+    opts: { status?: number; retryable?: boolean; retryAfterMs?: number } = {},
+  ) {
     super(message);
     this.name = 'ProviderError';
     this.status = opts.status;
     this.retryable = opts.retryable ?? true;
+    this.retryAfterMs = opts.retryAfterMs;
   }
+
+  /**
+   * True when the provider refused because we asked too often — not because it
+   * is broken.
+   *
+   * The distinction is load-bearing and cannot be recovered from the message
+   * text. A rate limit is a fact about OUR request rate; an outage is a fact
+   * about the provider. Recording the first as the second halts a session that
+   * was working and blames the wrong component in the record.
+   */
+  get rateLimited(): boolean {
+    return this.status === 429;
+  }
+}
+
+/**
+ * Parse a Go-style duration into milliseconds.
+ *
+ * Groq emits its rate-limit reset headers in this format: `46.755s`, `1m2.5s`,
+ * `500ms`, `2m`. Returns null for anything not understood, so a change of format
+ * on the provider's side degrades to "no hint" rather than to a wrong number
+ * that would be slept on.
+ */
+export function parseDurationMs(raw: string | null): number | null {
+  if (raw === null) return null;
+  const s = raw.trim();
+  if (s === '') return null;
+
+  const asMs = s.match(/^(\d+(?:\.\d+)?)ms$/);
+  if (asMs) return Number(asMs[1]);
+
+  const compound = s.match(/^(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?$/);
+  if (!compound || (compound[1] === undefined && compound[2] === undefined)) return null;
+
+  const ms = Number(compound[1] ?? 0) * 60_000 + Number(compound[2] ?? 0) * 1000;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+/**
+ * How long a 429 asked us to wait, in milliseconds. Undefined when the provider
+ * said nothing usable, in which case the caller backs off on its own schedule.
+ *
+ * Typed structurally rather than as `Headers` so this stays independent of which
+ * fetch implementation's types are in scope.
+ */
+function rateLimitResetMs(headers: { get(name: string): string | null }): number | undefined {
+  const fromBucket = parseDurationMs(headers.get('x-ratelimit-reset-tokens'));
+  if (fromBucket !== null) return fromBucket;
+
+  const seconds = Number(headers.get('retry-after'));
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : undefined;
 }
 
 interface ChatCompletionResponse {
@@ -91,7 +160,13 @@ export async function chatCompletion(params: ChatParams): Promise<ChatResult> {
       const retryable = res.status === 429 || res.status >= 500;
       throw new ProviderError(
         `chat completion failed: HTTP ${res.status} ${raw.slice(0, 200)}`,
-        { status: res.status, retryable },
+        {
+          status: res.status,
+          retryable,
+          // Only a 429 carries a meaningful wait; for a 5xx there is nothing to
+          // read and the caller's own schedule is the honest default.
+          retryAfterMs: res.status === 429 ? rateLimitResetMs(res.headers) : undefined,
+        },
       );
     }
 

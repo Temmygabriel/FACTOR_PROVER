@@ -568,7 +568,7 @@ talk to this backend until `WEB_ORIGIN` names it.
 
 | # | Change | State |
 |---|---|---|
-| 1 | Orientation strip | **Done** — `components/OrientationStrip.tsx`, rendered from `NavBar` |
+| 1 | Orientation strip | **Done** — `components/OrientationStrip.tsx`. **Moved 2026-09-15**: it was rendered *below* the nav and on `/` only; `factor_prover_ui_fix_exact.md` puts it *above* the nav on **every** route, and it now is. The CTA came out with the move — it pointed at `#empty-bench` / `#live-hypothesis`, which exist only on the loop view, so on the other two routes it was a link to nowhere |
 | 2 | Plain-English hypothesis sentence | **Done** — `hypothesisQuestion` + `barItMustClear` in `lib/copy.ts` |
 | 3 | Plain-English kill line + expander | **Done** — `killSentences` / `killReasonTechnical` / `TechnicalDisclosure` |
 | 4 | Leaderboard ratio + bar | **Done** — `BenchRatio` in `app/leaderboard/page.tsx` |
@@ -1200,3 +1200,71 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   no dependencies beyond Node, when it runs through `tsx`. Both were the same failure mode as
   everything above — a sentence asserting more than the code supports — this time in a document
   written specifically to avoid it.
+- **2026-09-14** — **The deployed site halted a live session and blamed the provider for the
+  loop's own request rate (finding 37).** A live session on the real Groq key stopped after eight
+  hypotheses with `reason: max_consecutive_llm_failures` and the detail *"the provider is down"*.
+  The provider was fine: it was answering HTTP 429 with
+  `x-ratelimit-reset-tokens: 46.755s` and `"Limit 8000, Used 6321, Requested 2077"` — the loop was
+  asking roughly ten times faster than an 8,000-token-per-minute free tier allows. A 429 was
+  classified `kind: 'transport'`, which both advanced the provider circuit and satisfied the
+  session breaker's "was a provider called and did it fail" filter, so three throttled iterations
+  in a row killed a healthy session. Fixed at the classification: a 429 is now `rate_limited`,
+  carries the provider's own reset hint (parsed from Go-style durations, `retry-after` only as a
+  fallback — it said 3s where the bucket needed 47), triggers a bounded deterministic backoff
+  instead of instantly degrading to the enumerator, and counts as neither a provider failure nor
+  a success. The rule that decides it is now `countsAsProviderFailure()` in `src/llm/provider.ts`
+  rather than an inline `.some()` no test could reach, and `test/generatorChain.test.ts` covers it
+  end to end through the real generator against a stubbed network — the chain had **no** test
+  file before this.
+
+  Proved to have teeth rather than asserted: the same harness run against the pre-fix tree fails
+  exactly the checks that describe the bug — `circuitOpen=true` after six consecutive 429s and
+  only **3 of 6** model calls, the other three having silently fallen through to the enumerator.
+  On the fixed tree, 46/46. Three user-visible strings that had become false were corrected with
+  it, including the circuit-breaker tooltip on the live site.
+
+- **2026-09-15** — **`factor_prover_ui_fix_exact.md` reconciled against the code, not re-implemented.**
+  The brief was already built on 2026-09-12 — Changes 2–7 exist and are wired
+  (`hypothesisQuestion` / `barItMustClear` / `killSentences` / `killReasonTechnical` in
+  `lib/copy.ts`, `BenchRatio` + `nullResultCopy` on the leaderboard, `ChainIntegrityBanner` on
+  the log, the score line in the nav). Diffing the "exact" spec against the tree found **two**
+  real deltas, both now closed:
+
+  - **The strip's position and reach.** It was rendered after the nav and only on `/`. It is now
+    above the nav on every route, which is what the spec asks for and also the better argument:
+    a judge opening a shared link lands on the leaderboard or the log — a table of kills with no
+    statement of how many hypotheses produced them. The CTA was dropped rather than made
+    conditional, because its two anchors exist only on the loop view and the strip is now on all
+    three.
+  - **The stamp's 2° tilt.** This is the interesting one. The spec's `transform: rotate(-2deg)`
+    cannot be applied as a class on the stamp element: `.stamp-in` runs with
+    `animation-fill-mode: both`, so its final keyframe (`transform: scale(1)`) keeps applying
+    after the 180ms and **outranks** a class `transform`. `-rotate-2` there would render as
+    nothing on every animated verdict — a change that looks implemented, passes a structural
+    check, and does nothing. The tilt is on a wrapper element instead, so the animation and the
+    rotation never touch the same property.
+
+  Two deviations from the spec were kept, both deliberate and both already argued in the files:
+  the counter reads **"attempted"** rather than "tested" (the field increments *before* the
+  schema wall, and the spec's own `schema_validation_failed` copy says those hypotheses were
+  killed *before testing* — the two cannot both be true on one screen), and the strip uses the
+  Tailwind palette tokens rather than the spec's inline hex, which are the same values, since the
+  spec also says not to change the palette. `borderRadius: 0` needed no work: `tailwind.config.ts`
+  replaces the radius scale with `none | full` only, so the stamp was already square.
+
+  **Favicon added** (`app/icon.svg`, Next's file convention — no `layout.tsx` change). The brief
+  says "put the logo as the favicon"; **there is no logo file in the repository** — the wordmark
+  is the literal text "FACTOR PROVER" in the nav. The icon is therefore derived from it: the two
+  letters a 16px tab can carry, drawn as rectangles rather than as SVG text, because a text
+  element would depend on a font being present at raster time and would clip or render empty if
+  it were not. Ink ground, amber letters, and the strip's amber rule along the base.
+
+  and the homepage said so out loud.** `render.yaml` never declared `BITGET_PAPER_TRADING`, so the
+  deployed Execution Guard refused at CHECK 1 and `src/execution/agentHub.ts` reported
+  *"BITGET_PAPER_TRADING is not 'true'"* on the front page — while `docs/DEMO_SCRIPT.md` printed
+  `✅` beside "`BITGET_PAPER_TRADING=true` in production". Two of the project's own artifacts
+  disagreed in public about a submitted checklist item. Finding 27 had already recorded the
+  unset flag as an open demo-scope decision; the contradiction is what forced it. The flag is now
+  declared in `render.yaml` — non-secret, reviewable, and it authorises nothing on its own, since
+  `ENABLE_EXECUTION` and the Bitget credentials remain absent and the guard's later checks still
+  refuse. The demo script's row now says what is true rather than what was hoped for.

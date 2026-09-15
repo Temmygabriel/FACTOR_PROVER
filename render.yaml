@@ -79,6 +79,25 @@ services:
       - key: WEB_ORIGIN
         value: https://factorprover.vercel.app
 
+      # Required by the preregistered checklist (build spec §17): the Execution
+      # Guard's CHECK 1 demands exactly the string "true" and refuses every order
+      # otherwise, and this deployment is supposed to be a paper-trading one.
+      #
+      # It was previously left unset, which meant production failed its own
+      # checklist item while `docs/DEMO_SCRIPT.md` printed a tick beside it — the
+      # homepage's trading banner named the missing variable, so the two
+      # contradicted each other in public. Declared here rather than in the
+      # dashboard for the same reason as WEB_ORIGIN: it is not a secret, and a
+      # reviewer should be able to diff it.
+      #
+      # This does NOT authorise an order. `ENABLE_EXECUTION` is still unset and
+      # the Bitget credentials are still absent, so CHECK 2 and CHECK 3 continue
+      # to refuse — see the banner text in src/execution/agentHub.ts. Setting
+      # this flag removes the one refusal that was a configuration oversight and
+      # leaves the two that are deliberate.
+      - key: BITGET_PAPER_TRADING
+        value: "true"
+
       # Optional. Blank is a supported configuration (see the note above).
       - key: GROQ_API_KEY
         sync: false
