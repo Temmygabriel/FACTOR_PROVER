@@ -1,6 +1,6 @@
 /**
- * The orientation strip — the top of the Loop view, and the only dark element on
- * the page.
+ * The orientation strip — the first thing on every screen, and the only dark
+ * element in the product.
  *
  * WHY THIS EXISTS. The product's thesis is that a kill is a result. Every other
  * screen is built to make that legible to someone already reading; this strip has
@@ -10,17 +10,28 @@
  * "Most fail. That's the point." Without that second line a reader's first guess
  * at a page of kills is that something is broken.
  *
+ * WHY IT SITS ABOVE THE NAV AND ON EVERY ROUTE. A judge who opens a shared link
+ * lands on the log or the leaderboard, not the loop view — and those screens are
+ * a table of kills with no statement of how many hypotheses produced them. The
+ * ratio has to arrive before the table, on whatever screen the link pointed at.
+ *
+ * WHY THERE IS NO CTA. The earlier brief put a "Watch it happen live" anchor here.
+ * It pointed at `#empty-bench` or `#live-hypothesis`, which exist only on the loop
+ * view, so on the two other routes it was a link to nowhere — and the strip is now
+ * on all three. Removed rather than made conditional: a control that silently
+ * disappears depending on the route is worse than no control.
+ *
+ * WHY IT TAKES COUNTS AS A PROP. `NavBar` already polls `/api/status` for the
+ * status chip and the nav score, and it is the component that renders this strip.
+ * A second fetch here would be a second source for one number, and the two would
+ * drift the moment one poll landed a beat ahead of the other — which is exactly
+ * how a header ends up disagreeing with the panel beneath it.
+ *
  * WHY THE COUNTERS ARE NOT ANIMATED. The redesign brief asks for a pulsing
  * arrow. The design spec reserves `animate-pulse` for the amber loop dot and says
  * so in §11, and a reserved signal stops meaning anything the moment a second
  * thing uses it — the dot's pulse is how a reader knows the loop is alive from
  * across the room. So the strip is a still surface and lets its numbers move.
- *
- * WHY IT TAKES COUNTS AS A PROP. The loop view already holds the session's
- * stats, from `/api/status` and from the SSE stream. A second fetch here would be
- * a second source for one number, and the two would drift the moment one poll
- * landed a beat ahead of the other — which is exactly how a header ends up
- * disagreeing with the panel beneath it.
  */
 
 import { ABSENT, fmtInt } from '@/lib/format';
@@ -28,14 +39,6 @@ import type { SessionCounts } from '@/lib/copy';
 
 interface Props {
   counts: SessionCounts | null;
-  /**
-   * Where "Watch it happen live" points. Passed in rather than fixed, because
-   * the live thing is in a different place depending on whether the session has
-   * started: with no hypotheses the action is the Start button in the empty
-   * bench, and with a session running it is the hypothesis card. A fixed anchor
-   * would scroll past the button a reader most needs to press.
-   */
-  target: string;
 }
 
 /** "43 attempted", with the number doing the work and the word staying quiet. */
@@ -48,7 +51,7 @@ function Counter({ value, label }: { value: number; label: string }) {
   );
 }
 
-export function OrientationStrip({ counts, target }: Props) {
+export function OrientationStrip({ counts }: Props) {
   return (
     <section
       aria-label="What this product does"
@@ -79,19 +82,6 @@ export function OrientationStrip({ counts, target }: Props) {
               {ABSENT} attempted · {ABSENT} passed · {ABSENT} killed
             </p>
           )}
-
-          {/*
-            The anchor is the point of the strip: it takes a reader who has just
-            understood the ratio to the thing producing it. It is a link, not a
-            button, because it navigates nowhere — it moves the page — and it is
-            announced as such.
-          */}
-          <a
-            href={target}
-            className="text-label font-semibold text-amber no-underline hover:underline"
-          >
-            Watch it happen live ↓
-          </a>
         </div>
       </div>
     </section>

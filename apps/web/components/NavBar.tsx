@@ -46,6 +46,24 @@ export function NavBar() {
 
   return (
     <>
+      {/*
+        The orientation strip, above the bar and on every route.
+
+        Above rather than below, because it is the first thing a reader should
+        meet and a navigation bar is not an answer to "what is this". On every
+        route, because a judge who opens a shared link lands on the log or the
+        leaderboard — a table of kills with no statement of how many hypotheses
+        produced them — and the ratio has to arrive before the table.
+
+        It scrolls away; only the 48px bar below it is sticky. A pinned band plus
+        the bar would hold a sixth of a laptop viewport for the whole session.
+
+        It shares this component's poll of /api/status rather than opening its
+        own, so the strip and the score in the bar cannot disagree about the same
+        instant.
+      */}
+      <OrientationStrip counts={counts} />
+
       <header className="sticky top-0 z-20 border-b border-rule bg-paper">
       <div className="mx-auto flex h-12 w-full max-w-[1280px] items-center justify-between gap-8 px-8">
         <div className="flex items-baseline gap-8">
@@ -94,8 +112,8 @@ export function NavBar() {
 
             Hidden below lg: at narrow widths the wordmark, three nav items, this
             and the chip do not fit, and a cramped bar is worse than an absent
-            counter — the strip at the top of the loop view carries the same
-            numbers at full size.
+            counter — the strip above carries the same numbers at full size, on
+            every route, at every width.
           */}
           <span className="hidden font-mono text-label text-ink-light lg:inline">
             {scoreLine ?? ''}
@@ -115,37 +133,6 @@ export function NavBar() {
         </div>
       </div>
       </header>
-
-      {/*
-        The orientation strip, on the loop view only, rendered from here rather
-        than from the page for one layout reason and one honesty reason.
-
-        Layout: <main> in app/layout.tsx is `mx-auto max-w-[1280px] px-8`, so a
-        strip rendered inside the page would be inset from both edges and the
-        brief's full-width band would come out as a wide box. This component's
-        header is already outside <main>, which is where a full-bleed band can
-        live. It sits AFTER the header rather than inside it so that it scrolls
-        away and only the 48px bar stays pinned — a pinned 80px band plus the bar
-        would hold a sixth of a laptop viewport for the whole session.
-
-        Honesty: the strip shows the same counts as the counter above it, and
-        they come from one poll rather than two, so the two cannot disagree about
-        the same instant. A second poller for the same endpoint is how a header
-        ends up contradicting the panel beneath it.
-      */}
-      {pathname === '/' ? (
-        <OrientationStrip
-          counts={counts}
-          // Same reading the loop page uses to decide which of the two it is
-          // showing, so the link and the page cannot disagree about where the
-          // live action is.
-          target={
-            status.data && status.data.stats.hypotheses_attempted === 0
-              ? '#empty-bench'
-              : '#live-hypothesis'
-          }
-        />
-      ) : null}
     </>
   );
 }

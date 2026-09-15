@@ -232,11 +232,26 @@ export function VerdictStamp({
   const detail = technical && technical.length > 0 ? technical : null;
 
   return (
-    <div
-      className={`${geometry.box} ${tone.border} ${tone.fill} ${tone.text} ${
-        animate ? 'stamp-in' : ''
-      }`}
-    >
+    /*
+     * The 2° tilt lives on a WRAPPER, not on the stamp itself, and that is not a
+     * style preference. `.stamp-in` runs with `animation-fill-mode: both`, so its
+     * final keyframe (`transform: scale(1)`) keeps applying after the 180ms are
+     * over and outranks a `transform` set by a class. A `-rotate-2` on the same
+     * element would therefore render as nothing on every animated verdict — a
+     * detail that looks implemented and is not, which is the exact failure this
+     * project spends its time hunting. Two elements, one transform each.
+     *
+     * The tilt is also why the stamp stays inside its parent's 32px padding: a
+     * 2° rotation of a wide box adds roughly `height × sin(2°)` of horizontal
+     * extent, a couple of pixels here, absorbed by the gutter rather than pushing
+     * the page sideways.
+     */
+    <div className="-rotate-2">
+      <div
+        className={`${geometry.box} ${tone.border} ${tone.fill} ${tone.text} ${
+          animate ? 'stamp-in' : ''
+        }`}
+      >
       <div className={geometry.label}>{verdict}</div>
       {secondLines.map((line, index) => (
         <p key={index} className={geometry.reason}>
@@ -277,6 +292,7 @@ export function VerdictStamp({
         real needs this more than a reader looking at a kill does.
       */}
       {detail ? <TechnicalDisclosure lines={detail} /> : null}
+      </div>
     </div>
   );
 }

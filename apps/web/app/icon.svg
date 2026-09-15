@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Factor Prover">
+  <!--
+    The favicon, derived from the wordmark rather than invented.
+
+    There is no logo file in this repository — the wordmark is the literal text
+    "FACTOR PROVER" set in the nav bar — so this is that mark abbreviated to the
+    two letters a 16px tab can actually render, in the product's own palette.
+
+    The letterforms are drawn as rectangles instead of SVG text on purpose. An
+    SVG favicon is rasterised at 16x16, and a text element would depend on a font
+    being available at that moment with metrics that fit: a fallback face with a
+    wider F would clip, and a missing one would render an empty box in the tab.
+    Rectangles render identically everywhere.
+
+    Palette: ink #1A1A18 ground, amber #C17D3C letters — the same pair as the
+    orientation strip, so the tab and the first band of the page agree.
+  -->
+  <rect width="32" height="32" fill="#1A1A18"/>
+
+  <!-- F -->
+  <rect x="5" y="8" width="3" height="16" fill="#C17D3C"/>
+  <rect x="5" y="8" width="10" height="3" fill="#C17D3C"/>
+  <rect x="5" y="15" width="7" height="3" fill="#C17D3C"/>
+
+  <!-- P -->
+  <rect x="18" y="8" width="3" height="16" fill="#C17D3C"/>
+  <rect x="18" y="8" width="9" height="3" fill="#C17D3C"/>
+  <rect x="18" y="15" width="9" height="3" fill="#C17D3C"/>
+  <rect x="24" y="8" width="3" height="10" fill="#C17D3C"/>
+
+  <!-- The strip's amber rule, echoed along the base. -->
+  <rect x="0" y="30" width="32" height="2" fill="#C17D3C"/>
+</svg>
