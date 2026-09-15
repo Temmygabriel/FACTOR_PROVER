@@ -64,7 +64,16 @@ jobs:
   run-session:
     name: Run a session and commit the log
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+
+    # Raised from 45 when this workflow learned to use a provider key. The
+    # arithmetic is not slack, it is the provider's: Groq's free tier allows
+    # 8,000 tokens per minute on this model, a hypothesis request costs about
+    # 2,077 of them, so the fastest an honest keyed session can go is one
+    # hypothesis every ~15.5s. The policy's own daily ceiling of 200 therefore
+    # needs ~52 minutes of wall clock before any overhead, and the old 45 would
+    # have killed a run that was working correctly. A keyless run is unaffected:
+    # the enumerator is a pure function and finishes in seconds.
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -109,13 +118,52 @@ jobs:
           # on it: this is what makes a keyless session deterministic instead of
           # failing with no proposals at all.
           LLM_ALLOW_DETERMINISTIC_FALLBACK: 'true'
+          # OPTIONAL, and the workflow is designed around its absence. With no
+          # secret set these resolve to the empty string, the generator chain
+          # reports every tier as `(no key)`, and the session falls through to the
+          # deterministic enumerator — which is what keeps this workflow's
+          # original promise intact: a judge with a GitHub login can press Run and
+          # get a complete, reproducible session without configuring anything, and
+          # without anything being billed to anyone.
+          #
+          # Set GROQ_API_KEY as a repository secret and the same workflow runs the
+          # real provider chain instead, and the log it commits was proposed by a
+          # model rather than by a pure function. The two runs differ in exactly
+          # that one respect and say so in their commit messages.
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # NOTE: BITGET_PAPER_TRADING and ENABLE_EXECUTION are deliberately NOT
           # set. Any promoted factor's order intent is refused at Execution Guard
           # CHECK 1 and the refusal is recorded. This workflow never trades.
         run: |
           set -o pipefail
+
+          # Pacing, derived from whether a model is actually answering.
+          #
+          # A keyless run needs no delay at all: the enumerator is a pure
+          # function of the attempt index and completes in seconds.
+          #
+          # A keyed run is bounded by the provider's own budget. Groq's free tier
+          # gives this model 8,000 tokens per minute and one hypothesis request
+          # costs roughly 2,077, so ~15.5s between requests is the fastest rate
+          # that does not simply generate 429s. 16,000ms sits just under it.
+          #
+          # This is pacing, not protection: a request that still gets throttled is
+          # retried by the provider layer using the reset hint in the response,
+          # and a throttle does not count against the circuit breaker — a 429 says
+          # this loop asked too fast, which is a fact about this loop, not about
+          # the provider's health.
+          if [ -n "${GROQ_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+            DELAY_MS=16000
+            echo "[run] a provider key is set — pacing at ${DELAY_MS}ms between hypotheses"
+          else
+            DELAY_MS=0
+            echo "[run] no provider key is set — the deterministic enumerator needs no pacing"
+          fi
+
           npx tsx apps/agent/src/scripts/run-session.ts \
             --iterations "${{ inputs.iterations }}" \
+            --delay-ms "$DELAY_MS" \
             --out apps/agent/logs/decisions.jsonl \
             --replace 2>&1 | tee demo-run.log
 
@@ -136,6 +184,13 @@ jobs:
 
       - name: Commit the log
         if: ${{ inputs.commit }}
+        # Re-declared rather than inherited: each `run:` step is its own shell, so
+        # the env set on the session step above does not reach this one. The
+        # commit message branches on it, so without this the message would always
+        # describe the keyless run.
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           LOG=apps/agent/logs/decisions.jsonl
@@ -172,13 +227,54 @@ jobs:
           fi
 
           ENTRIES=$(wc -l < "$LOG" | tr -d ' ')
-          git commit -F - <<'MSG'
+
+          # The commit message has to say which of the two runs this was, because
+          # the difference is the whole point of the artifact: a judge reading the
+          # log needs to know whether the hypotheses in it were proposed by a
+          # model or by a pure function. Claiming "reproducible" over a
+          # model-proposed log would be false — sampling differs run to run — and
+          # claiming "model-driven" over an enumerator log would be the exact kind
+          # of overstatement this project exists to avoid.
+          # No backticks anywhere in these two strings, and that is a rule rather
+          # than a style. The assignment is a double-quoted shell string, so a
+          # backtick inside it is command substitution: the words between a pair
+          # of them are run as a command and replaced by its output. The first
+          # draft of this message wrapped `commit: false` in backticks, and the
+          # rendered message lost those two words and reported
+          # "commit:: command not found" — silently, because a failing command
+          # substitution in an assignment does not stop the script.
+          if [ -n "${GROQ_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+            PROPOSER_SUMMARY="Proposals came from the live provider chain: each hypothesis was
+          proposed by a model, and the tier that answered is recorded on the entry.
+          The session is therefore NOT bit-reproducible — a second run samples
+          differently. What IS reproducible is every judgement made about it: the
+          gate is a deterministic function of the hypothesis, the committed frozen
+          dataset and the frozen policy, all three hashed into the entry, so each
+          verdict can be re-derived from the log alone. To check the enumerated
+          path instead, re-run this workflow without a key and with commit set to
+          false."
+          else
+            PROPOSER_SUMMARY="Proposals came from the deterministic enumerator, since no provider key
+          is configured. That makes the session itself reproducible: run this
+          workflow again, with or without a key, and the enumerated entries
+          reproduce exactly."
+          fi
+
+          # `--cleanup=strip` stated explicitly. The message is written as an
+          # indented heredoc inside a YAML block scalar, so every line arrives
+          # carrying the block's ten spaces of indentation, and `$PROPOSER_SUMMARY`
+          # is a multi-line variable whose continuation lines carry it too. Git's
+          # default cleanup happens to remove them, but relying on a default for
+          # the shape of the one message that says whether a model proposed these
+          # hypotheses is a bad trade.
+          git commit --cleanup=strip -F - <<MSG
           demo run: session on the frozen dataset
 
           Produced by .github/workflows/demo-run.yml, which runs the same
           SessionLoop the deployed server runs, against the committed frozen
-          dataset, with no provider keys configured. Proposals therefore come
-          from the deterministic enumerator and the session is reproducible.
+          dataset.
+
+          $PROPOSER_SUMMARY
 
           The log is hash-chained and verifies; every entry records the policy
           and dataset hashes it was computed against. KILLED verdicts outnumber
