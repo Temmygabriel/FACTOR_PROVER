@@ -372,9 +372,38 @@ async function main(args: string[]): Promise<number> {
 
   console.log(`[run] PASS — ${result.entriesChecked} entries, chain intact and append-only.`);
 
-  // The reproducibility claim, checked rather than asserted. Only possible when
-  // there was a log to compare against, which is every re-run and no first run.
-  if (previousSubstance !== null) {
+  /*
+   * The reproducibility comparison, and the one condition under which it means
+   * anything.
+   *
+   * It asserts a property of the whole path from attempt index to decision: that
+   * it is a pure function of the frozen dataset and the policy. That is exactly
+   * true when the proposals come from the deterministic enumerator, which is a
+   * pure function of the attempt index by construction.
+   *
+   * It is exactly FALSE when a model proposed them, and not because anything is
+   * broken. A sampled proposal is supposed to differ between runs; that is what
+   * sampling is. Comparing a model-proposed log against the log it replaced
+   * therefore tests nothing and fails always — which is how this first surfaced:
+   * a sixty-hypothesis Groq session that ran correctly to completion, wrote a
+   * chain-intact log, passed its own verification, and was then reported as a
+   * failure by an assertion that could not have held.
+   *
+   * So the comparison runs only when every proposal was enumerated, and when it
+   * cannot run the log says so rather than passing silently. The distinction
+   * matters to a reader: "reproducible" is a claim about the protocol, and it
+   * should only be printed over a log that has it.
+   *
+   * What remains true of a model-proposed log — and what a sceptical reader
+   * should check instead — is that every VERDICT in it is re-derivable: the gate
+   * is a deterministic function of the hypothesis, the frozen dataset and the
+   * policy, and all three are hashed into the entry. The hypotheses are not
+   * reproducible; the judgements about them are.
+   */
+  const sampledTiers = Object.keys(stats.generator_tiers).filter((tier) => tier !== 'deterministic');
+  const enumeratedOnly = sampledTiers.length === 0;
+
+  if (previousSubstance !== null && enumeratedOnly) {
     const difference = firstSubstantiveDifference(previousSubstance, substance(parsed.logPath));
     if (difference !== null) {
       process.stderr.write(
@@ -389,6 +418,14 @@ async function main(args: string[]): Promise<number> {
     console.log(
       `[run] PASS — reproduced all ${Math.min(previousSubstance.length, result.entriesChecked)} ` +
         'entries of the log it replaced: same hypotheses, same verdicts.',
+    );
+  } else if (previousSubstance !== null) {
+    console.log(
+      `[run] NOTE — the reproducibility comparison was not applied: ${sampledTiers.join(', ')} ` +
+        'proposed these hypotheses, and a sampled proposal is meant to differ between runs.\n' +
+        '       This log is NOT reproducible, and says so rather than claiming otherwise. What\n' +
+        '       is checkable is every verdict in it: the gate is a deterministic function of the\n' +
+        '       hypothesis, the frozen dataset and the policy, all three hashed into each entry.',
     );
   }
 
