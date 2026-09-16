@@ -17,12 +17,15 @@
  *    transient network error in one request kills a multi-hour research session.
  *    Every handler goes through `wrap()`.
  *
- * 2. CONTROL ROUTES ARE OPTIONALLY TOKEN-GATED, NOT SECRET. The deployment is a
- *    public URL on the free tier, and `POST /api/stop` ends the session. Setting
- *    `ADMIN_TOKEN` requires an `x-admin-token` header on the three control
- *    routes. Leaving it unset keeps them open, which is the right default for
- *    local development and for a judge poking at a demo — but the server says so
- *    loudly at boot rather than leaving the exposure implicit.
+ * 2. ONE CONTROL ROUTE IS TOKEN-GATED, AND IT IS NOT THE INTERESTING ONE. The
+ *    deployment is a public URL on the free tier. `POST /api/reset` clears a
+ *    circuit-breaker trip — a decision about a session's future rather than an
+ *    interaction with it — so it takes an `x-admin-token` header when
+ *    `ADMIN_TOKEN` is set. `POST /api/start` and `/api/stop` are never gated: a
+ *    judge pressing the button is the product being demonstrated, and trading
+ *    that away to stop a stranger ending a session is a bad trade. The server
+ *    says which routes are open at boot rather than leaving the exposure
+ *    implicit.
  *
  * 3. REDACTION HAPPENS ON THE WAY OUT. `last_error` and stream events can carry
  *    provider error text, and this API is readable by anyone with the URL. Every
@@ -68,7 +71,33 @@ function allowedOrigins(): string[] {
 }
 
 const ADMIN_TOKEN = (process.env['ADMIN_TOKEN'] ?? '').trim();
-const CONTROL_ROUTES = ['/api/start', '/api/stop', '/api/reset'] as const;
+
+/**
+ * The two control routes a VISITOR is allowed to use, and the one they are not.
+ *
+ * These were a single list behind a single token, which forced a bad choice:
+ * either the token was unset and a stranger could end the session mid-demo, or
+ * it was set and a judge could not start one. Both of those are wrong, because
+ * the routes do not have the same owner.
+ *
+ * `/api/start` and `/api/stop` belong to whoever is using the product. A judge
+ * deciding whether this thing works needs to press the button themselves —
+ * watching a session someone else started is not the same evidence. Gating them
+ * would trade the product's central demo, "here, try it", for protection against
+ * a nuisance: the worst a stranger can do is stop a session, and the loop can be
+ * started again.
+ *
+ * `/api/reset` belongs to the operator. It clears a circuit-breaker trip, which
+ * is a decision about a session's future rather than an interaction with it, and
+ * no visitor has a reason to reach for it. It is the one that would actually
+ * ruin a demo, because a reset from a stranger is silent and the next judge sees
+ * an empty product with no indication anything happened.
+ *
+ * So the token, when set, gates reset alone. Setting it no longer costs a judge
+ * anything, which is what makes it safe to recommend setting it at all.
+ */
+const OPEN_CONTROL_ROUTES = ['/api/start', '/api/stop'] as const;
+const ADMIN_CONTROL_ROUTES = ['/api/reset'] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,7 +328,11 @@ export function createApp(loop: SessionLoop) {
   // `app.all` rather than `app.use`: `use` matches by PREFIX, so `/api/stopwatch`
   // would have been dragged through the token gate too. Harmless — it fails
   // closed — but it makes the 404 for an unrelated path depend on a credential.
-  app.all([...CONTROL_ROUTES], (req, res, next) => {
+  //
+  // Only the operator's route is listed. `/api/start` and `/api/stop` are
+  // deliberately absent: see OPEN_CONTROL_ROUTES for why a visitor keeping the
+  // ability to drive the loop is worth more than the nuisance it permits.
+  app.all([...ADMIN_CONTROL_ROUTES], (req, res, next) => {
     if (ADMIN_TOKEN === '') return next();
     const supplied = req.header('x-admin-token');
     // Constant-time comparison is not warranted here: the token does not protect
@@ -390,11 +423,27 @@ function main(): void {
       `iteration_delay_ms=${iterationDelayMs ?? 'default'}`,
   );
 
+  // Stated on every boot, not only when something is misconfigured. Which
+  // routes a stranger can reach is the kind of thing that should be readable
+  // from the logs of the process that is actually running, rather than
+  // reconstructed from the source and an environment variable that may or may
+  // not have been set in a dashboard. This is also what makes
+  // OPEN_CONTROL_ROUTES load-bearing rather than a comment with a type.
+  console.log(
+    `[api] control routes: ${OPEN_CONTROL_ROUTES.join(', ')} are OPEN by design ` +
+      '(a visitor drives the loop); ' +
+      (ADMIN_TOKEN === ''
+        ? `${ADMIN_CONTROL_ROUTES.join(', ')} is ALSO OPEN — ADMIN_TOKEN is not set`
+        : `${ADMIN_CONTROL_ROUTES.join(', ')} requires x-admin-token`),
+  );
+
   if (ADMIN_TOKEN === '') {
     console.warn(
-      '[api] ADMIN_TOKEN is not set, so POST /api/start, /api/stop and /api/reset ' +
-        'are OPEN to anyone who can reach this URL. That is fine for local work and ' +
-        'for a demo you are watching. Before leaving it unattended, set ADMIN_TOKEN.',
+      '[api] ADMIN_TOKEN is not set, so POST /api/reset is OPEN to anyone who can ' +
+        'reach this URL. /api/start and /api/stop are open either way and that is ' +
+        'deliberate — a visitor driving the loop is the product working. Reset is ' +
+        'the operator\'s: set ADMIN_TOKEN before leaving this unattended, and note ' +
+        'that doing so no longer takes the start button away from a judge.',
     );
   }
 
