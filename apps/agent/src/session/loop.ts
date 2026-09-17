@@ -111,6 +111,31 @@ export interface SessionLoopOptions {
   sessionId?: string;
   /** Decision log path. Defaults to `<agent>/logs/decisions.jsonl`. */
   logPath?: string;
+  /**
+   * The committed record this loop is NOT writing to, served read-only.
+   *
+   * WHY THIS EXISTS, AND WHY IT IS NOT `logPath`. The decision log has a field
+   * called `total_hypotheses_attempted_this_session`, and the verifier REQUIRES
+   * it to equal the entry's 1-based position in the file (a second, independent
+   * witness that no line was inserted). That is exactly right when one file
+   * holds one session, and the whole design assumes that: `run-session.ts`
+   * refuses to overwrite a log without `--replace` for this reason.
+   *
+   * The hosted service broke the assumption. It ships with the committed record
+   * already at `logPath`, appends its own session on top, and the first entry of
+   * a brand-new session therefore claimed "attempted this session: 61" — a lie
+   * in the one field a reader is most likely to check, on a project whose entire
+   * claim is that its record does not lie. The verifier cannot catch it, because
+   * the verifier is right: the value IS the position in the file. The bug is
+   * that the file is two sessions.
+   *
+   * So the two roles get two files. The loop appends to `logPath` (this
+   * process's session, started fresh at boot). `committedLogPath` is the
+   * published record — in this repository, a committed artifact — and the API
+   * serves it read-only. Defaults to `logPath`, so a single-file caller
+   * (`run-session.ts`, the tests) is unaffected and keeps one file one session.
+   */
+  committedLogPath?: string;
   bus?: SessionEventBus;
   generator?: HypothesisGenerator;
   breaker?: CircuitBreaker;
@@ -167,10 +192,13 @@ export class SessionLoop {
    * log nobody is writing to.
    */
   readonly logPath: string;
+  /** The published record, served read-only. See `committedLogPath` in the options. */
+  readonly committedLogPath: string;
   readonly bus: SessionEventBus;
   readonly ledger: PaperLedger;
 
   private readonly log: DecisionLog;
+  private readonly committed: DecisionLog;
   private readonly ctx: AppendContext;
   private readonly policy: GatePolicy;
   private readonly generator: HypothesisGenerator;
@@ -210,6 +238,12 @@ export class SessionLoop {
     this.ctx = buildAppendContext({ sessionId: this.sessionId, fdrLevel: this.policy.fdr_level });
     this.logPath = opts.logPath ?? defaultLogPath();
     this.log = new DecisionLog(this.logPath);
+
+    // Read-only. Constructing a DecisionLog does not create or touch the file —
+    // it reads what is there and remembers the head — so this is safe against a
+    // record that does not exist yet, which `readAll()` reports as empty.
+    this.committedLogPath = opts.committedLogPath ?? this.logPath;
+    this.committed = new DecisionLog(this.committedLogPath);
 
     this.generator = opts.generator ?? new HypothesisGenerator(loadGeneratorConfig());
     this.breaker = opts.breaker ?? new CircuitBreaker(this.policy, this.now);
@@ -1042,6 +1076,27 @@ export class SessionLoop {
       before: opts.before ?? null,
     });
     return { entries: rows, total: this.log.entryCount, next_cursor };
+  }
+
+  /**
+   * Page the COMMITTED record rather than this process's session.
+   *
+   * What `/api/log` serves, and what a reader should be shown when they ask to
+   * see "the record". Identical to `getLog` in every respect except which file it
+   * reads, which is the whole point: the paging, the row shape and the gate
+   * policy used to render a verdict are the same code, so the record cannot be
+   * rendered by a different set of rules than the session was judged by.
+   *
+   * Reads through a `DecisionLog` opened on the record path. That read is
+   * non-destructive — the constructor only reads — so a service that ships with
+   * a committed record serves it without a chance of rewriting it.
+   */
+  getCommittedLog(opts: { limit?: number; before?: string | null } = {}): LogResponse {
+    const { rows, next_cursor } = pageRows(this.committed.readAll(), this.policy, {
+      limit: opts.limit ?? 50,
+      before: opts.before ?? null,
+    });
+    return { entries: rows, total: this.committed.entryCount, next_cursor };
   }
 
   getProvenance(): Provenance {

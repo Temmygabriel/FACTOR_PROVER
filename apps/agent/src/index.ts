@@ -34,6 +34,7 @@
  */
 
 import { createServer } from 'node:http';
+import { rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
@@ -158,6 +159,18 @@ function intEnv(name: string): number | null {
   return n;
 }
 
+/**
+ * An optional non-blank string from the environment, or null.
+ *
+ * Blank counts as unset: a dashboard variable that exists but holds nothing is
+ * an operator who has not decided, not an operator who has chosen the empty
+ * path. Treating "" as a path would put the log somewhere surprising.
+ */
+function envOr(name: string): string | null {
+  const raw = (process.env[name] ?? '').trim();
+  return raw === '' ? null : raw;
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -224,7 +237,7 @@ export function createApp(loop: SessionLoop) {
         return fail(res, 400, 'invalid_query', 'before must be a single entry_id string');
       }
 
-      const page: LogResponse = loop.getLog({ limit, before: beforeRaw ?? null });
+      const page: LogResponse = loop.getCommittedLog({ limit, before: beforeRaw ?? null });
       // A cursor that matches nothing yields an empty page with a null cursor
       // rather than an error: it means the caller has paged past the end, which
       // is the expected end of iteration, not a fault.
@@ -250,13 +263,13 @@ export function createApp(loop: SessionLoop) {
       }
 
       const base = {
-        log_path: loop.logPath,
+        log_path: loop.committedLogPath,
         reproduce: 'npm run verify-log --workspace apps/agent',
       };
 
       let body: VerifyResponse;
       try {
-        const result = verifyDecisionLog(loop.logPath);
+        const result = verifyDecisionLog(loop.committedLogPath);
         body = {
           ...base,
           ok: result.ok,
@@ -286,7 +299,7 @@ export function createApp(loop: SessionLoop) {
         const code = (err as { code?: unknown } | null)?.code;
         const reason =
           code === 'ENOENT'
-            ? `no decision log at ${loop.logPath} yet — no session has recorded an entry`
+            ? `no decision log at ${loop.committedLogPath} yet — no session has recorded an entry`
             : 'the decision log exists but could not be read';
         console.error('[api] log verification could not read the log:', redactSecrets(String(err)));
         body = {
@@ -413,11 +426,44 @@ function main(): void {
   if (maxIterations !== null) loopOptions.maxIterations = maxIterations;
   if (iterationDelayMs !== null) loopOptions.iterationDelayMs = iterationDelayMs;
 
+  // --- two logs, two roles -------------------------------------------------
+  //
+  // The published record and this process's session are different documents and
+  // must not share a file. `logs/decisions.jsonl` is the committed record: it is
+  // in the repository, it is what the README quotes and what a judge reads, and
+  // the service only ever READS it. This process writes its own session to a
+  // separate file, removed at boot so that one boot is one session — the same
+  // rule `run-session.ts` enforces with `--replace`, and for the same reason.
+  //
+  // Getting this wrong is not cosmetic. Before the split, a visitor pressing
+  // Start on a freshly deployed service produced an entry reading "attempted
+  // this session: 61" — the 61st line of the committed file, on a session that
+  // had attempted one. The verifier passed, correctly: `total_hypotheses_*
+  // attempted_this_session` is defined as the entry's position in its file, and
+  // the file really was that long. The fault was that the file was two sessions.
+  const committedLogPath = envOr('DECISION_LOG_PATH') ?? 'logs/decisions.jsonl';
+  const sessionLogPath = envOr('SESSION_LOG_PATH') ?? 'logs/live-session.jsonl';
+  loopOptions.committedLogPath = committedLogPath;
+  loopOptions.logPath = sessionLogPath;
+
+  // A fresh chain per boot. If removal fails the session still runs — it would
+  // append to a previous container's entries — so the failure is reported
+  // rather than swallowed, because that is the state the split exists to avoid.
+  try {
+    rmSync(sessionLogPath, { force: true });
+  } catch (err) {
+    console.error(`[api] could not clear ${sessionLogPath}: ${redactSecrets(String(err))}`);
+  }
+
   const loop = new SessionLoop(loopOptions);
   const { app, hub } = createApp(loop);
 
   const server = createServer(app);
 
+  console.log(
+    `[api] logs: serving the committed record at ${committedLogPath}, ` +
+      `recording this session at ${sessionLogPath}`,
+  );
   console.log(
     `[api] loop bounds: max_iterations=${maxIterations ?? 'unbounded'}, ` +
       `iteration_delay_ms=${iterationDelayMs ?? 'default'}`,
