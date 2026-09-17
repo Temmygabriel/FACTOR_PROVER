@@ -113,15 +113,26 @@ export interface DecisionLogEntry {
   schema_error?: string;
 
   /**
-   * Why the preferred tier did not propose this hypothesis, when it did not.
+   * Every tier disruption that happened while proposing this hypothesis.
    *
-   * `generator` says which tier answered; this says why the chain reached it.
-   * Absent when the primary tier answered, which is the ordinary case, and
-   * absent from every entry written before this field existed — the verifier
-   * hashes each entry's own fields, so an older entry without it still verifies.
+   * `generator` says which tier answered. This says what was in the way on the
+   * way there, and it is NOT simply "the reason we fell back" — the name is
+   * narrower than the contents. Two different things land here:
+   *
+   *   - a tier that failed and was skipped, so a LATER tier answered. That is a
+   *     fallback, and `generator` names a tier other than the one in this string.
+   *   - a tier that was throttled, waited out the reset hint, and then answered
+   *     the SAME iteration itself. That is a retry, not a fallback, and
+   *     `generator` names the same tier this string does. The provider records it
+   *     deliberately, because a silent wait of tens of seconds is otherwise
+   *     visible only as a gap between timestamps.
+   *
+   * Absent when no tier was disrupted at all — the ordinary case. Also absent
+   * from every entry written before this field existed: the verifier hashes each
+   * entry's own fields, so an older entry without it still verifies.
    *
    * Carries a provider's own error text, so it is NOT stable across runs of the
-   * same session: a throttled fallback says something different each time. That
+   * same session: a throttled proposal says something different each time. That
    * is a property of the fact being recorded, not a defect in the recording.
    */
   generator_fallback_reason?: string;

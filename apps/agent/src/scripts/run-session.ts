@@ -196,32 +196,67 @@ function reasonDistribution(path: string): Array<[string, number]> {
 }
 
 /**
- * Why entries in the log this run just wrote fell back off the model tiers.
+ * What was in the way while proposing, split into the two different things that
+ * `generator_fallback_reason` records.
+ *
+ * The field is wider than its name. It carries every tier disruption during the
+ * proposal, which is two distinct events:
+ *
+ *   - SKIPPED. The tier failed and a LATER tier answered. `generator` on the
+ *     entry names a different tier from the one in the reason. This is a real
+ *     fallback.
+ *   - STALLED. The tier was throttled, waited out the provider's reset hint and
+ *     then answered the same iteration itself. `generator` names the SAME tier.
+ *     Nothing fell back; the cost was wall-clock, and the provider records it so
+ *     a forty-second pause is in the record rather than only in the timestamp
+ *     gap between two entries.
+ *
+ * Reading the reason's leading tier against the entry's own `generator` is what
+ * separates them, and it is the only signal available: the two events produce
+ * the same `tier [kind]` shape and differ only in who ended up answering.
  *
  * Keyed on the tier and the failure KIND — `groq [rate_limited]` — because that
- * is the part that is stable across occurrences and is the actual answer to
- * "why did the model stop answering". The provider's own error text differs
- * every time, so keying on the whole message would report a hundred throttles as
- * a hundred distinct facts.
+ * is the part that is stable across occurrences and is the actual answer to "why
+ * did the model stop answering". The provider's own error text differs every
+ * time, so keying on the whole message would report a hundred throttles as a
+ * hundred distinct facts.
  *
- * Reads the file it just finished writing, so it cannot disagree with it. Empty
- * when every proposal came from a model tier, which is the ordinary case.
+ * Reads the file it just finished writing, so it cannot disagree with it.
  */
-function fallbackSummary(path: string): Array<[string, number]> {
-  const counts = new Map<string, number>();
+export interface TierDisruptions {
+  /** Tiers that failed so a later tier answered. */
+  skipped: Array<[string, number]>;
+  /** Tiers that stalled and then answered themselves. Not fallbacks. */
+  stalled: Array<[string, number]>;
+}
+
+function fallbackSummary(path: string): TierDisruptions {
+  const skipped = new Map<string, number>();
+  const stalled = new Map<string, number>();
+
+  const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+
   for (const line of readFileSync(path, 'utf8').split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const entry = JSON.parse(trimmed) as Record<string, unknown>;
     const reason = entry['generator_fallback_reason'];
     if (typeof reason !== 'string' || reason === '') continue;
-    const key = reason
-      .split(' | ')
-      .map((part) => part.split(' ').slice(0, 2).join(' '))
-      .join(', ');
-    counts.set(key, (counts.get(key) ?? 0) + 1);
+
+    const answered = typeof entry['generator'] === 'string' ? entry['generator'] : null;
+
+    for (const part of reason.split(' | ')) {
+      const [tier, kind] = part.split(' ');
+      if (!tier) continue;
+      const key = `${tier} [${kind ?? 'unknown'}]`;
+      bump(tier === answered ? stalled : skipped, key);
+    }
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+  const sort = (m: Map<string, number>) =>
+    [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+  return { skipped: sort(skipped), stalled: sort(stalled) };
 }
 
 /**
@@ -403,14 +438,26 @@ async function main(args: string[]): Promise<number> {
   // is itself the claim a keyed run is making. A summary that appears only when
   // something went wrong cannot distinguish "nothing went wrong" from "the
   // summary was never wired up".
-  const fallbacks = fallbackSummary(parsed.logPath);
+  const disruptions = fallbackSummary(parsed.logPath);
   console.log('');
-  console.log('  entries that fell back off a model tier, and why:');
-  if (fallbacks.length === 0) {
-    console.log('    none — every proposal came from a model tier or the run had no model configured');
+  console.log('  tier disruptions while proposing, and which kind they were:');
+  if (disruptions.skipped.length === 0 && disruptions.stalled.length === 0) {
+    console.log('    none — every proposal went through its first-choice tier untouched,');
+    console.log('    or the run had no model configured and enumerated instead');
   } else {
-    for (const [reason, count] of fallbacks) {
-      console.log(`    ${String(count).padStart(4)}  ${reason}`);
+    // Listed separately because they are different facts about the run, and
+    // lumping them together is what made this block wrong before: an entry that
+    // waited out a throttle and was then answered by the SAME tier was being
+    // reported as having fallen back off it.
+    console.log('    skipped — the tier failed, a later tier answered (a real fallback):');
+    if (disruptions.skipped.length === 0) console.log('      none');
+    for (const [reason, count] of disruptions.skipped) {
+      console.log(`      ${String(count).padStart(4)}  ${reason}`);
+    }
+    console.log('    stalled — the tier was throttled, waited, then answered itself:');
+    if (disruptions.stalled.length === 0) console.log('      none');
+    for (const [reason, count] of disruptions.stalled) {
+      console.log(`      ${String(count).padStart(4)}  ${reason}`);
     }
   }
 
