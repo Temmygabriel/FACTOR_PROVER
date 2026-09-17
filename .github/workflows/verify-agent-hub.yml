@@ -130,14 +130,19 @@ jobs:
 
           probe "version"              "$BGC" --version
           probe "top-level help"       "$BGC" --help
-          probe "order group help"     "$BGC" order --help
-          probe "order place help"     "$BGC" order place --help
 
-          # The parsing probe. Parsing precedes authentication, so what this tests
-          # is whether the parser ACCEPTS the spelling we build. "unknown flag"
-          # means agentHub.ts is wrong; an auth error means the vector is right
-          # and only the credentials are missing.
-          probe "does the parser accept our exact vector?" \
+          # `discover` is the CLI's own documentation of itself, and it is the
+          # only authority on a verb's parameter names. The top-level help
+          # truncates every description with an ellipsis and prints one example,
+          # which is not enough to know whether a flag we build exists.
+          probe "discover: domains"             "$BGC" discover
+          probe "discover: order verb"          "$BGC" discover --tool order
+          probe "discover: order place params"  "$BGC" discover --tool order --action place
+
+          # The vector agentHub.ts builds today, unchanged. Kept in the run so the
+          # rejection is on the record beside the correction, rather than only in
+          # a commit message claiming there was one.
+          probe "the vector we build today" \
             "$BGC" order place \
               --symbol BTCUSDT \
               --side buy \
@@ -145,6 +150,24 @@ jobs:
               --paper-trading \
               --dry-run \
               --json
+
+          # The same intent in the grammar the CLI reports for itself. Parsing
+          # precedes authentication, so an auth error here means the shape is
+          # accepted and only the credentials are missing — which is the answer
+          # that matters.
+          probe "the same intent in the v3 grammar" \
+            "$BGC" order --action place \
+              --category SPOT \
+              --symbol BTCUSDT \
+              --side buy \
+              --orderType market \
+              --qty 0.001 \
+              --paper-trading \
+              --dry-run
+
+          # Documented as not calling the API, so it reports whether a credential
+          # exists without needing one to exist.
+          probe "auth status"          "$BGC" get_auth_status
 
       - name: Summary
         if: always()
