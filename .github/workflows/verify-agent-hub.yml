@@ -169,6 +169,48 @@ jobs:
           # exists without needing one to exist.
           probe "auth status"          "$BGC" get_auth_status
 
+          # WHICH CATEGORY DO THE TRADED INSTRUMENTS LIVE IN?
+          #
+          # `order --action place` requires `category`, and this project has never
+          # sent one — the builder did not know it needed to. The targets are
+          # Bitget's tokenised-equity rTokens (RCOINUSDT, RNVDAUSDT, … from
+          # RTOKEN_SYMBOLS in src/types.ts). Whether those are SPOT or
+          # USDT-FUTURES decides what the corrected vector must say, and `market`
+          # is a PUBLIC endpoint, so this question can be settled here without a
+          # credential. Guessing it would put a second unverified claim where the
+          # first one just was.
+          probe "RCOINUSDT in SPOT"           "$BGC" market --action tickers --category SPOT --symbol RCOINUSDT
+          probe "RCOINUSDT in USDT-FUTURES"   "$BGC" market --action tickers --category USDT-FUTURES --symbol RCOINUSDT
+
+          # Is --confirm accepted on `place`? The discovery output above reports
+          # `requiresConfirm: false` for this action, so --confirm is not the
+          # CLI's two-phase contract — but whether passing it anyway is tolerated
+          # or rejected decides what the builder should emit.
+          probe "does place tolerate --confirm?" \
+            "$BGC" order --action place \
+              --category SPOT \
+              --symbol RCOINUSDT \
+              --side buy \
+              --orderType market \
+              --qty 10 \
+              --paper-trading \
+              --dry-run \
+              --confirm
+
+          # And the SELL branch. For a market buy, `qty` is quote coin (USDT), so
+          # notional maps straight onto it. For a market sell the docs say `qty`
+          # is BASE coin, so the builder must divide the notional by the price.
+          # This probe confirms the sell shape parses at all.
+          probe "market sell in base-coin qty" \
+            "$BGC" order --action place \
+              --category SPOT \
+              --symbol RCOINUSDT \
+              --side sell \
+              --orderType market \
+              --qty 0.5 \
+              --paper-trading \
+              --dry-run
+
       - name: Summary
         if: always()
         run: |
