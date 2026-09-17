@@ -48,6 +48,7 @@ import {
   HypothesisGenerator,
   countsAsProviderFailure,
   describeChain,
+  fallbackReason,
   loadGeneratorConfig,
 } from '../llm/provider.js';
 import { CircuitBreaker, type BreakerState } from '../circuit/breaker.js';
@@ -130,6 +131,16 @@ interface JudgedCandidate {
   slotIndex: number;
   decision: GateDecision;
   generator: string;
+  /**
+   * Why the preferred tier did not propose this, or null if it did.
+   *
+   * Held on the candidate rather than passed per append because it describes how
+   * the hypothesis was PROPOSED, which never changes — so a re-adjudicated
+   * verdict for an older hypothesis repeats the reason that hypothesis was
+   * enumerated, rather than inheriting the reason current at re-adjudication
+   * time. That is the correct provenance for both entries.
+   */
+  generatorFallbackReason: string | null;
   factorId: string | null;
   /** The hypothesis_id of the proposal that caused this verdict, for the trace. */
   judgedAtFamilySize: number;
@@ -433,6 +444,11 @@ export class SessionLoop {
     }
 
     const tier = outcome.tier;
+    // Computed once per iteration and carried on every entry this hypothesis
+    // produces, including its later re-adjudications. Null when the primary tier
+    // answered, and the log writes the field only when it is non-null, so the
+    // field's presence on an entry is itself the signal that a fallback happened.
+    const fallback = fallbackReason(outcome.tierFailures);
     this.generatorTiers[tier] = (this.generatorTiers[tier] ?? 0) + 1;
     this.breaker.recordHypothesis(
       outcome.proposal ? { signal: outcome.proposal.signal, target: outcome.proposal.target } : undefined,
@@ -448,6 +464,7 @@ export class SessionLoop {
           `on it: ${outcome.schemaError ?? 'no detail supplied'}`,
         schemaError: outcome.schemaError ?? 'unknown schema error',
         generator: tier,
+        generatorFallbackReason: fallback,
         proposal: null,
       });
       return;
@@ -493,6 +510,7 @@ export class SessionLoop {
           `a backtest to produce the same number and would let a repeated idea look like ` +
           `independent confirmation.`,
         generator: tier,
+        generatorFallbackReason: fallback,
         proposal,
       });
       return;
@@ -506,6 +524,7 @@ export class SessionLoop {
         reason: 'lookback_bias_detected',
         detail: bias,
         generator: tier,
+        generatorFallbackReason: fallback,
         proposal,
       });
       return;
@@ -568,6 +587,7 @@ export class SessionLoop {
       slotIndex: slot.index,
       decision: adjudication.decision,
       generator: tier,
+      generatorFallbackReason: fallback,
       factorId: null,
       judgedAtFamilySize: this.family.size,
     };
@@ -613,6 +633,7 @@ export class SessionLoop {
       hypothesis: candidate.hypothesis,
       partitionUsed: 'DISCOVERY',
       generator: candidate.generator,
+      generatorFallbackReason: candidate.generatorFallbackReason,
       decision: candidate.decision,
       backtest: {
         ic: candidate.backtest.ic,
@@ -646,6 +667,8 @@ export class SessionLoop {
     generator: string;
     proposal: ProposedHypothesis | null;
     schemaError?: string;
+    /** Null, or why the preferred tier did not propose this. See JudgedCandidate. */
+    generatorFallbackReason?: string | null;
   }): void {
     const emptyBacktest: BacktestResult = {
       ic: 0,
@@ -704,6 +727,7 @@ export class SessionLoop {
       generator: params.generator,
       decision,
       backtest: emptyBacktest,
+      generatorFallbackReason: params.generatorFallbackReason ?? null,
       ...(params.schemaError !== undefined ? { schemaError: params.schemaError } : {}),
     });
 

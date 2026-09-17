@@ -112,6 +112,20 @@ export interface DecisionLogEntry {
   /** Present only when the hypothesis was rejected before any backtest. */
   schema_error?: string;
 
+  /**
+   * Why the preferred tier did not propose this hypothesis, when it did not.
+   *
+   * `generator` says which tier answered; this says why the chain reached it.
+   * Absent when the primary tier answered, which is the ordinary case, and
+   * absent from every entry written before this field existed — the verifier
+   * hashes each entry's own fields, so an older entry without it still verifies.
+   *
+   * Carries a provider's own error text, so it is NOT stable across runs of the
+   * same session: a throttled fallback says something different each time. That
+   * is a property of the fact being recorded, not a defect in the recording.
+   */
+  generator_fallback_reason?: string;
+
   entry_hash: string;
 }
 
@@ -209,6 +223,7 @@ export class DecisionLog {
       baseline_ic: number;
     };
     schemaError?: string;
+    generatorFallbackReason?: string | null;
   }): DecisionLogEntry {
     const entryId = `E-${String(this.count + 1).padStart(4, '0')}`;
 
@@ -244,6 +259,12 @@ export class DecisionLog {
     };
 
     if (params.schemaError !== undefined) payload.schema_error = params.schemaError;
+    // Only when there is something to say. An entry whose primary tier answered
+    // gets no field, so `generator_fallback_reason` present in a log means a
+    // fallback happened and the same field on every entry would mean nothing.
+    if (params.generatorFallbackReason) {
+      payload.generator_fallback_reason = params.generatorFallbackReason;
+    }
 
     const entry: DecisionLogEntry = {
       ...payload,

@@ -217,13 +217,16 @@ reproducibility claim is therefore checked by CI rather than asserted in prose.
 ### Layout
 
 ```
-apps/agent/     the loop: generation, backtest, gate, guard, log, REST + SSE API
-apps/web/       Next.js dashboard — leaderboard, decision log, live feed, provenance
-docs/           DATA_FINDINGS.md — measured Bitget API behaviour that reshaped the spec
-config/         gate_policy.json and partitions.json — the preregistered protocol
-logs/           decisions.jsonl — the hash-chained research record
-PROGRESS.md     the build record, including every finding and correction
+apps/agent/          the loop: generation, backtest, gate, guard, log, REST + SSE API
+apps/agent/config/   gate_policy.json and partitions.json — the preregistered protocol
+apps/agent/logs/     decisions.jsonl — the hash-chained research record
+apps/web/            Next.js dashboard — leaderboard, decision log, live feed, provenance
+docs/                DATA_FINDINGS.md, DEMO_SCRIPT.md, TRY_IT.md
+PROGRESS.md          the build record, including every finding and correction
 ```
+
+**New here?** [`docs/TRY_IT.md`](docs/TRY_IT.md) is a nine-step guide for checking the
+project's central claim yourself, in about five minutes, without reading any of the above.
 
 ---
 

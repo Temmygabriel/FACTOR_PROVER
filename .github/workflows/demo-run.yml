@@ -145,8 +145,20 @@ jobs:
           #
           # A keyed run is bounded by the provider's own budget. Groq's free tier
           # gives this model 8,000 tokens per minute and one hypothesis request
-          # costs roughly 2,077, so ~15.5s between requests is the fastest rate
-          # that does not simply generate 429s. 16,000ms sits just under it.
+          # costs roughly 2,077, so ~15.5s between requests is the rate at which
+          # the bucket exactly breaks even.
+          #
+          # 16,000ms was the first attempt at this and it was a mistake, in a way
+          # worth recording: it clears the arithmetic by 3% and nothing else.
+          # Break-even means any request that runs longer than average — a
+          # reasoning model's output length is not fixed — draws the bucket down,
+          # and a drawn-down bucket then throttles requests that were themselves
+          # perfectly paced. A sixty-hypothesis run at 16,000ms landed with
+          # twenty-eight model proposals and thirty-two enumerated ones.
+          #
+          # 24,000ms is 2.5 requests per minute, about 5,200 tokens per minute, or
+          # 65% of the budget. The margin is the point: pacing has to survive the
+          # variance in request size, not the average of it.
           #
           # This is pacing, not protection: a request that still gets throttled is
           # retried by the provider layer using the reset hint in the response,
@@ -154,7 +166,7 @@ jobs:
           # this loop asked too fast, which is a fact about this loop, not about
           # the provider's health.
           if [ -n "${GROQ_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
-            DELAY_MS=16000
+            DELAY_MS=24000
             echo "[run] a provider key is set — pacing at ${DELAY_MS}ms between hypotheses"
           else
             DELAY_MS=0

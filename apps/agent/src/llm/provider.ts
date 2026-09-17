@@ -217,6 +217,47 @@ export function countsAsProviderFailure(failures: readonly TierFailure[]): boole
   return failures.some((f) => f.kind === 'transport');
 }
 
+/**
+ * How long a single tier's failure message may be inside the decision log.
+ *
+ * A provider error body is arbitrary text — Groq's 429 payload alone runs well
+ * past this — and the decision log is a committed artifact whose entries are
+ * meant to be read as lines. A cap keeps one bad day at the provider from
+ * turning a legible record into a wall of JSON. Truncation is marked, never
+ * silent: a shortened message must not be mistakable for the whole one.
+ */
+const FALLBACK_MESSAGE_CAP = 240;
+
+/**
+ * One line saying why the preferred tier did not produce this hypothesis.
+ *
+ * WHY THE LOG NEEDS THIS. `generator` names the tier that DID answer; on its own
+ * that is a fact with no cause attached. A committed entry reading
+ * `generator: deterministic` cannot be distinguished from the outside between
+ * "no key was configured", "the provider was throttling us" and "the provider
+ * was down" — three situations with nothing in common, and the third of which is
+ * the only one that says anything about the provider. An earlier version of this
+ * file recorded only the tier, and a sixty-hypothesis session landed with
+ * thirty-two enumerated entries and no committed explanation of why the model
+ * stopped answering. That is precisely the kind of unexplained gap this project
+ * exists to refuse, so the reason travels with the entry.
+ *
+ * Returns null when nothing failed — the primary tier answered — so an entry
+ * that had no fallback carries no field at all rather than an empty one.
+ */
+export function fallbackReason(failures: readonly TierFailure[]): string | null {
+  if (failures.length === 0) return null;
+  return failures
+    .map((f) => `${f.tier} [${f.kind}] ${condense(f.message, FALLBACK_MESSAGE_CAP)}`)
+    .join(' | ');
+}
+
+/** Collapse whitespace and cap the length, marking any truncation explicitly. */
+function condense(message: string, max: number): string {
+  const flat = message.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max)}... [truncated]`;
+}
+
 export interface GenerationOutcome {
   /**
    * The candidate, or null when the proposal was schema-invalid. Null with

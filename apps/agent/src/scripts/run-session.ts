@@ -196,6 +196,35 @@ function reasonDistribution(path: string): Array<[string, number]> {
 }
 
 /**
+ * Why entries in the log this run just wrote fell back off the model tiers.
+ *
+ * Keyed on the tier and the failure KIND — `groq [rate_limited]` — because that
+ * is the part that is stable across occurrences and is the actual answer to
+ * "why did the model stop answering". The provider's own error text differs
+ * every time, so keying on the whole message would report a hundred throttles as
+ * a hundred distinct facts.
+ *
+ * Reads the file it just finished writing, so it cannot disagree with it. Empty
+ * when every proposal came from a model tier, which is the ordinary case.
+ */
+function fallbackSummary(path: string): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const entry = JSON.parse(trimmed) as Record<string, unknown>;
+    const reason = entry['generator_fallback_reason'];
+    if (typeof reason !== 'string' || reason === '') continue;
+    const key = reason
+      .split(' | ')
+      .map((part) => part.split(' ').slice(0, 2).join(' '))
+      .join(', ');
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/**
  * The comparable substance of a log: one line per entry saying WHICH hypothesis
  * was judged and WHAT the gate decided about it.
  *
@@ -290,8 +319,17 @@ async function main(args: string[]): Promise<number> {
   // Progress, because a CI log that is silent for several minutes reads as a
   // hung job. Only verdicts are printed, one line each, plus the events that
   // mean the run stopped for a reason other than reaching its bound.
+  //
+  // Tier failures are ALSO printed, and that is not decoration. A session whose
+  // provider throttles it halfway leaves a log where thirty-two entries say
+  // `generator: deterministic` and nothing anywhere says why — which is how the
+  // first keyed demo run ended, and the question "why did your model stop
+  // answering" had no committed answer. The reason now travels in the entry
+  // itself (see `fallbackReason` in src/llm/provider.ts) and is echoed here so a
+  // reader of the CI log sees it as it happens rather than only in the file.
   let seen = 0;
   const every = Math.max(1, Math.floor(parsed.iterations / 10));
+  const tierTrouble = new Map<string, number>();
   loop.bus.subscribe(
     (event) => {
       if (event.type === 'verdict') {
@@ -305,6 +343,11 @@ async function main(args: string[]): Promise<number> {
               `${decision}${reason ? ` (${reason})` : ''}`,
           );
         }
+      } else if (event.type === 'tier_failure') {
+        // Counted by (tier, kind) rather than printed per occurrence: a hundred
+        // identical throttles is one fact, and the summary below reports it once.
+        const key = event.message.split(':')[0] ?? 'unknown';
+        tierTrouble.set(key, (tierTrouble.get(key) ?? 0) + 1);
       } else if (event.type === 'circuit_break' || event.type === 'error' || event.type === 'session_stopped') {
         console.log(`[run] ${event.type}: ${event.message}`);
       }
@@ -354,6 +397,21 @@ async function main(args: string[]): Promise<number> {
   console.log('  why each hypothesis was decided:');
   for (const [reason, count] of distribution) {
     console.log(`    ${String(count).padStart(4)}  ${reason}`);
+  }
+
+  // Printed unconditionally, including when empty, because "no entry fell back"
+  // is itself the claim a keyed run is making. A summary that appears only when
+  // something went wrong cannot distinguish "nothing went wrong" from "the
+  // summary was never wired up".
+  const fallbacks = fallbackSummary(parsed.logPath);
+  console.log('');
+  console.log('  entries that fell back off a model tier, and why:');
+  if (fallbacks.length === 0) {
+    console.log('    none — every proposal came from a model tier or the run had no model configured');
+  } else {
+    for (const [reason, count] of fallbacks) {
+      console.log(`    ${String(count).padStart(4)}  ${reason}`);
+    }
   }
 
   const result = verifyDecisionLog(parsed.logPath);
