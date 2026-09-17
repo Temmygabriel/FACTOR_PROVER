@@ -45,8 +45,8 @@
  * shown, its consequence is stated, and the reader decides.
  */
 
-import { Button } from '@/components/Button';
 import { ABSENT, fmtInt, truncHash } from '@/lib/format';
+import { canStartSession } from '@/lib/phase';
 import type { StatusResponse } from '@/lib/types';
 
 interface Props {
@@ -56,8 +56,6 @@ interface Props {
    * renders the table below this panel. Null means that read has not answered.
    */
   committedEntries: number | null;
-  onStart: () => void;
-  pending: boolean;
   /** The control route's own answer, or its failure. Never invented here. */
   message: string | null;
 }
@@ -160,13 +158,15 @@ function CheckRow({ check }: { check: Check }) {
   );
 }
 
-export function EmptyBench({ status, committedEntries, onStart, pending, message }: Props) {
+export function EmptyBench({ status, committedEntries, message }: Props) {
   const rows = checks(status);
-  // Starting is only meaningful from a phase where the loop is not already
-  // going. From `running` or `paused` the control is the pause/resume button in
-  // the session header, and a second one here would be two controls for one
-  // state.
-  const canStart = ['idle', 'stopped', 'error'].includes(status.phase);
+  /*
+   * Still needed for the copy below, which addresses the reader differently
+   * depending on whether a start is possible — but it no longer gates a control.
+   * Shared with the session header through `lib/phase.ts` so the two cannot
+   * disagree about which phases accept a start.
+   */
+  const canStart = canStartSession(status.phase);
   /*
    * Zero and null are different: null is "this read has not answered", and only a
    * confirmed zero means the record is empty.
@@ -236,14 +236,20 @@ export function EmptyBench({ status, committedEntries, onStart, pending, message
         </ul>
       </div>
 
-      <div className="mt-5 flex flex-wrap items-center gap-4">
-        {canStart ? (
-          <Button onClick={onStart} disabled={pending}>
-            {pending ? 'Starting…' : 'Start research session'}
-          </Button>
-        ) : null}
-        {message ? <p className="text-label text-ink">{message}</p> : null}
-      </div>
+      {/*
+        The start control used to live here, and that placement was the bug: this
+        panel renders only while `hypotheses_attempted === 0`, so once the loop had
+        run once and stopped there was no start control anywhere on the page. It
+        now lives in the session header, which owns the loop control for every
+        phase, so this panel is purely explanatory. `message` stays — the control
+        route's own answer is reported next to where the control is, but a result
+        that arrived while this panel was on screen still belongs on it.
+      */}
+      {message ? (
+        <div className="mt-5">
+          <p className="text-label text-ink">{message}</p>
+        </div>
+      ) : null}
 
       {canStart ? (
         <p className="mt-3 max-w-[80ch] text-caption text-ink-light">

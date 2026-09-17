@@ -75,9 +75,20 @@ export function LiveFeed({
       }
     >
       {visible.length === 0 ? (
+        /*
+         * The first version of this line answered a question the reader had not
+         * asked yet — it explained the CONNECTION ("the loop may be idle, or the
+         * stream may not be connected") to someone who did not yet know what the
+         * panel was for. Driving the deployed site produced the plain version of
+         * the problem: "the feed am not sure of what feed it is". So the panel
+         * says what it shows and where the control is, and the connection state
+         * stays in the footnote below, where a reader who is already looking for
+         * it will find it.
+         */
         <p className="py-1 text-label text-ink-light">
-          No events yet. The loop may be idle, or the stream may not be connected —
-          the line below says which.
+          Nothing yet. As the loop works, one line appears here per event — the hypothesis
+          it proposed, the backtest that scored it, and the gate&rsquo;s verdict on it. If
+          the loop is not running, the control is at the top of this page.
         </p>
       ) : (
         <ol className="flex max-h-[22rem] flex-col overflow-y-auto">

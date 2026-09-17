@@ -34,6 +34,7 @@ import { ProvenancePanel } from '@/components/ProvenancePanel';
 import { SessionStatsPanel } from '@/components/SessionStatsPanel';
 import { StatusChip } from '@/components/StatusChip';
 import { fmtInt } from '@/lib/format';
+import { canStartSession } from '@/lib/phase';
 import {
   getLog,
   getStatus,
@@ -118,6 +119,14 @@ export default function LoopPage() {
    * See PROGRESS.md finding 35.
    */
   const isEmpty = statusData !== null && statusData.stats.hypotheses_attempted === 0;
+
+  /*
+   * Whether the loop can be ASKED to start, which is a different question from
+   * `isEmpty` above. `isEmpty` says this process has done no work yet; this says
+   * the phase will accept a start. Conflating them is what removed the start
+   * control from the page after the first run. See `lib/phase.ts`.
+   */
+  const canStart = canStartSession(phase);
 
   const [control, setControl] = useState<{ pending: boolean; text: string | null }>({
     pending: false,
@@ -243,9 +252,28 @@ export default function LoopPage() {
 
         <div className="flex items-center gap-6">
           <StatusChip phase={phase} pulse={running} />
+          {/*
+            The session header owns the loop control for EVERY phase, not only the
+            running ones.
+
+            It used to render only for `running` and `paused`, and the start
+            control lived in the empty bench, which renders only while
+            `hypotheses_attempted === 0`. From `stopped` with attempts behind it
+            neither appeared, so there was no way to start the loop again from the
+            interface — one run and the page was a dead end that explained
+            nothing. Found by driving the deployed site, which is the only way it
+            would have been found.
+
+            One control in one place for every phase, so there is never a state
+            with two ways to change the loop, and never one with none.
+          */}
           {phase === 'running' || phase === 'paused' ? (
             <Button onClick={toggleLoop} disabled={control.pending}>
               {control.pending ? 'Sending…' : phase === 'running' ? 'Pause loop' : 'Resume loop'}
+            </Button>
+          ) : canStart ? (
+            <Button onClick={toggleLoop} disabled={control.pending}>
+              {control.pending ? 'Sending…' : 'Start research session'}
             </Button>
           ) : null}
         </div>
@@ -255,8 +283,11 @@ export default function LoopPage() {
         Before the provenance panel, deliberately. On a session with no
         hypotheses the first question is "what is this and can I start it", and
         the provenance block answers a question the reader has not asked yet.
-        `onStart` is `toggleLoop`: from any phase but `running` it POSTs
-        /api/start, which is the same server call that resumes a paused loop.
+
+        This panel no longer carries the start control — the session header owns
+        it for every phase. It is explanatory only, and the pre-flight rows below
+        are the part worth keeping here: they are what a cold visitor reads before
+        deciding whether to start anything.
       */}
       {isEmpty && statusData ? (
         <EmptyBench
@@ -269,8 +300,6 @@ export default function LoopPage() {
            * rendered as "not read", never as zero.
            */
           committedEntries={log.data ? log.data.total : null}
-          onStart={toggleLoop}
-          pending={control.pending}
           message={control.text}
         />
       ) : null}
