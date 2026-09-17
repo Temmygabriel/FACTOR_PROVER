@@ -38,6 +38,7 @@
 | **Committed demo run** | **DONE — 200 hypotheses, 201 entries, chain intact (`6022039`)... see "The demo run"** |
 | **Deployed site vs. committed record** | **FIXED — the copy is scoped to the session. Finding 35, verified live.** |
 | README / demo-script numbers | **DONE — `README.md` written (it did not exist), `docs/DEMO_SCRIPT.md` written from the committed log. Finding 36.** |
+| **Agent Hub command vector** | **VERIFIED against the real CLI — it was wrong in 4 ways and had never been run. Findings 37–42.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
 `factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
@@ -919,6 +920,111 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
 
 ---
 
+## The Agent Hub integration, verified (2026-09-17)
+
+**`apps/agent/src/execution/agentHub.ts` had never been run. It was wrong in four ways.**
+It says so in its own old header — `STATUS: UNVERIFIED` — and the deployed banner told a
+reader the command vector was "documented but UNVERIFIED against a live Agent Hub". That was
+honest, and then it was checked, and the honest answer turned out to be worse than the
+disclaimer: the vector did not work. Not "might not" — the CLI rejects it before reading a
+single argument.
+
+**Why it had never been run, and why that was reasonable until it wasn't.** This machine has
+8GB of RAM and no toolchain by design; `bgc` is an npm package, not a prebuilt binary (the
+Agent Hub GitHub repo publishes no releases), so running it meant installing Node packages on
+the one machine the project kept clean. `docs/DATA_FINDINGS.md` had recorded the flags from
+documentation, and nothing in the repo could contradict a documented flag.
+
+**How it was verified.** `.github/workflows/verify-agent-hub.yml`, dispatched to a Linux
+runner. It installs `@bitget-ai/bitget-agent-cli` 3.0.0 into a scratch directory outside the
+repo (the root is an npm workspace, so a root install relinks both workspaces), asserts no
+Bitget credential exists in the environment or on disk **before** running anything, then
+interrogates the CLI with `--help`, `discover`, and dry-run invocations. Runs:
+[35263451872](https://github.com/Temmygabriel/FACTOR_PROVER/actions/runs/35263451872) and
+[35264648127](https://github.com/Temmygabriel/FACTOR_PROVER/actions/runs/35264648127).
+
+**Finding 37 — the grammar changed and we did not.** v3 replaced `bgc <module> <tool>` with
+`bgc <tool> --action <name>`. The builder emitted `order place`, which produces:
+
+```
+Error: unexpected extra arguments [place]. The v3 grammar is
+`bgc <tool> --action <name> --<param> <value>` (it replaced `bgc <module> <tool>`).
+```
+
+This is worse than a wrong flag, because a wrong flag is caught by the parser one argument
+later and the error names the flag. A wrong *shape* fails before parsing, and the builder had
+no branch in which it could ever have been told.
+
+**Finding 38 — one of the flags never existed, and two required ones were missing.**
+`--notional-usdt` is not a flag. The size parameter is `--qty`, and `bgc discover --tool order
+--action place` names five required params for `place`: `category`, `symbol`, `qty`, `side`,
+`orderType`. The builder sent two of them. `category` was absent because nothing had ever told
+it a category was needed. `--json` was also appended to every order; JSON is the CLI's default
+output and `--pretty` is the modifier, so that flag did not exist either.
+
+**Finding 39 — `qty` is not one unit, and the difference is the order size.** From the CLI's
+own `qty` description: quote coin for a market **buy**, base coin for a market **sell**. So
+the USDT notional passes through unchanged in one direction and must be divided by the price
+in the other. Had this been fixed by simply renaming `--notional-usdt` to `--qty` — the
+obvious repair — every **sell** would have been sized at `notional × price`. For RCOINUSDT at
+~172 USDT, a 100 USDT order becomes a ~17,200 USDT one, and `max_order_usdt: 100` never fires,
+because the guard approves the notional it is shown and the multiplication happens afterwards
+inside the CLI. `qtyFor` now divides for sells and refuses outright when the price it needs is
+not usable.
+
+**Finding 40 — the capability banner named credentials the CLI does not read.** The deployed
+banner said *"Bitget credentials incomplete (BITGET_API_KEY, BITGET_API_SECRET,
+BITGET_API_PASSPHRASE missing)"*. `bgc --help` lists `BITGET_API_KEY`, `BITGET_SECRET_KEY`,
+`BITGET_PASSPHRASE`. Two of the three names were wrong, so a reader who followed the banner
+would set variables nothing reads and the banner would go on saying they were missing. The
+same banner is where a reader decides whether the product works.
+
+**Finding 41 — a dry run would have read as a placed order.** `parseResult` looked for a flat
+`success`/`accepted`/`status`/`orderId` and treated `parsed['data']` as an order id — in the
+real body `data` is an object, so that branch could never fire. More importantly, a dry run
+returns a success-shaped body, exit 0, no error, for an order that was never sent. Reading
+that as accepted would have made `BGC_DRY_RUN` — a setting whose entire purpose is to not
+place orders — look like working execution in every log and on every screen. Both observed
+envelopes are now handled explicitly and a dry run is reported as a preview.
+
+**Finding 42 — `cliPresent` was a constant.** It asked `existsSync("bgc")`, which is false for
+every bare name, so the capability report said the CLI was absent no matter what was
+installed, and the one branch that would have looked it up on PATH was unreachable. A
+capability probe whose answer cannot vary is worse than no probe, because it looks like a
+measurement. `resolveOnPath` now walks PATH the way a shell does.
+
+**What is verified now, and what is still not.** The **request** is verified: every flag the
+module passes was accepted in the run, and the dry-run probes answered with a full `wouldSend`
+preview while `get_auth_status` reported `authorized: false` and no credentials existed
+anywhere in the job. The **placement** is not, and `unverified` stays `true` for that reason
+alone — stated narrowly rather than as a blanket disclaimer over the parts that were checked.
+
+One consequence worth recording because it is easy to get backwards: `--confirm` is **not**
+the CLI's two-phase contract. Discovery reports `requiresConfirm: false` for `place`, and the
+dry-run probes returned no `confirmationRequired`. The CLI places on the first call. The
+two-phase confirm this project relies on is Execution Guard CHECK 5, which is ours. `--confirm`
+is kept because it is tolerated and keeps the command line self-describing, but no safety
+property depends on it.
+
+**Also measured, not assumed:** the traded targets are SPOT instruments. `RTOKEN_SYMBOLS` are
+Bitget's tokenised-equity rTokens, and `market --action tickers --category SPOT --symbol
+RCOINUSDT` returned `lastPrice 172.31` while the same call against `USDT-FUTURES` returned
+`Trading pair RCOINUSDT does not exist`. `market` is a public endpoint, so that answer cost
+nothing and needed no credential.
+
+**Pinned by 30 tests** (`apps/agent/test/agentHub.test.ts`) whose fixtures are stdout copied
+verbatim from the run — including two error messages that exist precisely because something
+was wrong. The tests reach the private builders through a subclass, so nothing in the suite
+can spawn a process. The one that matters most asserts that a dry run is **not** an accepted
+order.
+
+**The pattern in findings 33–36 and 37–42 is the same one, one level deeper.** Those were
+documents asserting results that did not exist. This is code asserting an interface that was
+never contacted. Both are what happens when a plausible description goes untested long enough
+to be repeated — and in both cases the thing that found it was running it, not reading it.
+
+---
+
 ## Change log
 
 - **2026-09-11** — Spec study complete. Live API recon done; 6 findings recorded, 2 spec-breaking.
@@ -1268,3 +1374,18 @@ its own 4 assertions, because a wrong unit renders as plausible prose.
   declared in `render.yaml` — non-secret, reviewable, and it authorises nothing on its own, since
   `ENABLE_EXECUTION` and the Bitget credentials remain absent and the guard's later checks still
   refuse. The demo script's row now says what is true rather than what was hoped for.
+
+- **2026-09-17** — **The Agent Hub integration was verified against the real CLI, and it was
+  broken.** A new cloud workflow installed `@bitget-ai/bitget-agent-cli` 3.0.0 on a Linux
+  runner and ran the commands this repo had only ever written down. Four errors, none of which
+  any artifact in the repo could have caught: v3 replaced `bgc <module> <tool>` with
+  `bgc <tool> --action <name>`, so `order place` is rejected before parsing (37); `--notional-usdt`
+  does not exist, `--category` and `--orderType` were missing, and `--json` was never a flag (38);
+  `qty` is quote coin for a buy and base coin for a sell, so the obvious repair would have sized
+  every sell at `notional × price` past a guard that had already approved it (39); the deployed
+  banner named two credential variables the CLI does not read (40); a dry run would have parsed
+  as a placed order, making `BGC_DRY_RUN` look like working execution (41); and `cliPresent`
+  asked `existsSync("bgc")`, which is false for every bare name, so the capability report was a
+  constant wearing the shape of a measurement (42). Fixed, with 30 tests whose fixtures are
+  stdout copied verbatim from the run. `unverified` stays `true` for a narrower and now-stated
+  reason: the request is verified, a live placement is not.
