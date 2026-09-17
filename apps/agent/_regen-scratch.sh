@@ -52,4 +52,12 @@ else
   echo "      (recreate it, or restore from a previous _scratch/node_modules)" >&2
 fi
 
+# Put the probes back, for the same reason as the stubs: `rm -rf _scratch` above
+# deletes them, and rewriting a probe after every regen is how a verification
+# step stops being run. They import `./src/...`, so they have to sit at the top
+# of _scratch next to the mirror.
+if [ -d _probes ]; then
+  cp _probes/*.ts _scratch/ 2>/dev/null || true
+fi
+
 echo "scratch rebuilt -> apps/agent/_scratch"

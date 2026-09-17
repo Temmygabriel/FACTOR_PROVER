@@ -44,6 +44,12 @@ _e2e.mjs
 # copies them back in. Never committed — they are not the real packages and must
 # never be mistaken for them.
 _stubs/
+# Verification probes — the controls that check the harness can detect what it
+# claims to detect. Kept OUTSIDE _scratch for the same reason as _stubs:
+# _regen-scratch.sh does `rm -rf _scratch`, and a probe that has to be rewritten
+# after every regen is a probe that stops being run. The script copies them back
+# in. Never committed — they are local verification, not the project's tests.
+_probes/
 
 # os / editor
 .DS_Store
