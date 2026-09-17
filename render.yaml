@@ -98,6 +98,33 @@ services:
       - key: BITGET_PAPER_TRADING
         value: "true"
 
+      # Pacing, and without this the deployed service is quietly broken.
+      #
+      # The loop's built-in default is 1,500ms between hypotheses. That is fine
+      # for the deterministic enumerator, which is a pure function and costs
+      # nothing, but the deployed service runs the real provider chain, and Groq's
+      # free tier allows 8,000 tokens per minute on this model while one
+      # hypothesis request costs about 2,077. A 1,500ms pace is roughly 40
+      # requests and ~83,000 tokens per minute — about ten times the budget. The
+      # provider answers the excess with HTTP 429, the loop treats each as a tier
+      # failure, and the session degrades to the enumerator it was supposed to be
+      # an upgrade on.
+      #
+      # 24,000ms is 2.5 requests per minute, ~5,200 tokens per minute, or 65% of
+      # the budget. The margin is the point rather than slack: pacing has to
+      # absorb the variance in request size, not its average. A sixty-hypothesis
+      # run at 16,000ms — 3% clear of break-even — produced 28 model proposals
+      # and 32 enumerated ones; the same run at 24,000ms produced 60 of 60 from
+      # the model. Both numbers are in `.github/workflows/demo-run.yml`, which
+      # derives its own pacing the same way.
+      #
+      # The cost is wall-clock, and it is disclosed rather than hidden: roughly
+      # 25 seconds per hypothesis. Slow, and honestly so — the free tier is the
+      # constraint, and a session that runs at the speed the quota allows is a
+      # more truthful demonstration than one that outruns it and falls back.
+      - key: LOOP_ITERATION_DELAY_MS
+        value: "24000"
+
       # Optional. Blank is a supported configuration (see the note above).
       - key: GROQ_API_KEY
         sync: false
