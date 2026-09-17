@@ -1,0 +1,166 @@
+name: Verify Agent Hub CLI
+
+# Answers one question, in the cloud, without touching anyone's laptop:
+# does the `bgc` command vector this project BUILDS actually exist in the real
+# CLI?
+#
+# WHY THIS RUNS HERE AND NOT LOCALLY. The dev machine has 8GB of RAM and no
+# toolchain, and `bgc` ships as an npm package rather than a prebuilt binary —
+# so verifying it locally would mean installing Node packages on the one machine
+# this project has deliberately kept clean. A GitHub runner is free, disposable,
+# and already where this repository does its heavy work. The output is then also
+# evidence with a URL and a timestamp, rather than a claim in a commit message.
+#
+# WHY IT IS SAFE TO RUN AT ALL. `apps/agent/src/execution/agentHub.ts` builds
+#
+#   bgc order place --symbol <s> --side <side> --notional-usdt <n> \
+#       --paper-trading [--dry-run] [--confirm] --json
+#
+# and has never been run against a live Agent Hub, which the deployed banner says
+# out loud. This job configures NO Bitget credentials — checked before any CLI
+# runs, not after — so there is nothing to authenticate with and no account for
+# an order to reach even if every flag were correct. The one probe that looks
+# like an order carries `--dry-run` and `--paper-trading`, and it earns its place
+# for a different reason: argument parsing happens BEFORE authentication, so its
+# error message separates "this flag does not exist" from "you are not logged
+# in". Those are very different findings and only one of them means this
+# project's integration is wrong.
+#
+# READ THE OUTPUT, CHANGE THE CODE. The point is not a green tick. If the real
+# CLI spells something differently from the vector above, `BGC_ORDER_ARGS` in
+# agentHub.ts exists precisely so the vector can be corrected without editing the
+# builder — and `describeCapability()`'s hardcoded `unverified: true` should
+# become a claim backed by the version string printed here.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Run bgc --help and compare it to the vector we build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # The CLI declares engines.node >= 20. 24 is what this repository
+          # deploys and tests on, so a CLI that works here works there.
+          node-version: '24'
+
+      - name: Confirm no Bitget credentials are reachable
+        # FIRST, and deliberately so. A check that runs after the probes would
+        # only ever report whether the probes were harmless, which is not the
+        # property this workflow claims. Run before them, it is what makes them
+        # harmless: with no key, secret or passphrase in the environment, the
+        # order probe below cannot authenticate to anything.
+        #
+        # The secrets context is not referenced anywhere in this file either, so
+        # this step is a statement about the job's whole environment rather than
+        # about what one step happened to export.
+        run: |
+          leaked=0
+          for v in BITGET_API_KEY BITGET_API_SECRET BITGET_API_PASSPHRASE BITGET_API_KEY_ID; do
+            if [ -n "${!v:-}" ]; then
+              echo "::error::$v is set in this job — the probes are not credential-free"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" -ne 0 ]; then exit 1; fi
+
+          # A credential file would be just as good as a credential variable, and
+          # the installer package is known to write one. Nothing here runs that
+          # installer, but saying so is cheaper than assuming it.
+          for f in "$HOME/.bgc/config.json" "$HOME/.bitget/credentials"; do
+            if [ -e "$f" ]; then
+              echo "::error::$f exists — a credential file would make the probes authenticated"
+              exit 1
+            fi
+          done
+
+          echo "confirmed: no Bitget credentials, in the environment or on disk"
+
+      - name: Install the CLI outside the repository
+        # Installed into a scratch directory, NOT the repo root. The root is an
+        # npm workspace ("workspaces": ["apps/agent", "apps/web"]), so a root
+        # install would also relink both workspaces — a side effect on the
+        # checkout that this workflow has no reason to cause. The agent shells
+        # out to `bgc` rather than importing it, so nothing here belongs in the
+        # project's dependency graph anyway.
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -5
+
+          echo "--- resolved version ---"
+          node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
+          echo "--- bin link ---"
+          ls -l "$TOOLCHAIN/node_modules/.bin/"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Probe the CLI surface
+        # Each probe is allowed to fail so one refusal cannot hide the rest, and
+        # each is labelled, because an exit code alone will not say which question
+        # was answered.
+        run: |
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "==================================================================="
+            echo "## $label"
+            echo "## \$ $*"
+            echo "==================================================================="
+            set +e
+            "$@" 2>&1
+            code=$?
+            set -e
+            echo "--- exit code: $code"
+          }
+
+          probe "version"              "$BGC" --version
+          probe "top-level help"       "$BGC" --help
+          probe "order group help"     "$BGC" order --help
+          probe "order place help"     "$BGC" order place --help
+
+          # The parsing probe. Parsing precedes authentication, so what this tests
+          # is whether the parser ACCEPTS the spelling we build. "unknown flag"
+          # means agentHub.ts is wrong; an auth error means the vector is right
+          # and only the credentials are missing.
+          probe "does the parser accept our exact vector?" \
+            "$BGC" order place \
+              --symbol BTCUSDT \
+              --side buy \
+              --notional-usdt 10 \
+              --paper-trading \
+              --dry-run \
+              --json
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Agent Hub CLI probe"
+            echo
+            echo "Compares the real \`bgc\` surface against the vector"
+            echo "\`apps/agent/src/execution/agentHub.ts\` builds:"
+            echo
+            echo '```'
+            echo "bgc order place --symbol <s> --side <side> --notional-usdt <n> \\"
+            echo "    --paper-trading [--dry-run] [--confirm] --json"
+            echo '```'
+            echo
+            echo "- no Bitget credentials were present (checked before any CLI ran)"
+            echo "- the order probe carried \`--dry-run\` and \`--paper-trading\`"
+            echo "- full output is in the 'Probe the CLI surface' step log"
+          } >> "$GITHUB_STEP_SUMMARY"
