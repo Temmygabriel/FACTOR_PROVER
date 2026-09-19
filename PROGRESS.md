@@ -1389,3 +1389,54 @@ to be repeated — and in both cases the thing that found it was running it, not
   constant wearing the shape of a measurement (42). Fixed, with 30 tests whose fixtures are
   stdout copied verbatim from the run. `unverified` stays `true` for a narrower and now-stated
   reason: the request is verified, a live placement is not.
+
+- **2026-09-19** — **The committed artifact was not the demo run. It had been overwritten twice
+  by pacing calibration, and nothing in the repository noticed.**
+
+  Found while auditing the docs before submission. Every document in this repository describes
+  the 2026-09-13 session: 200 hypotheses, 201 entries, the H-0006 demotion. The file those
+  documents describe, `apps/agent/logs/decisions.jsonl`, did not describe it. It held **60**
+  entries and **zero** promotions.
+
+  The history is unambiguous once the file is followed through git rather than read as it
+  stands:
+
+  | Commit | Date | Entries | Generator | Verdicts |
+  |---|---|---|---|---|
+  | `6022039` | 2026-09-13 | **201** | deterministic | 200 KILL, 1 PROMOTE |
+  | `514cc38` | 2026-09-16 | 60 | 28 groq + 32 deterministic | 60 KILL |
+  | `b198c0c` | 2026-09-17 | 60 | 60 groq | 60 KILL |
+
+  Neither of the two later commits is a demo run. Both are the pacing calibration recorded in
+  `demo-run.yml`'s own comments: the 16,000ms experiment that *"landed with twenty-eight model
+  proposals and thirty-two enumerated ones"* is `514cc38` exactly, and `b198c0c` is the re-test
+  after the delay was raised to 24,000ms, which is what proved the pacing fix worked — all 60
+  hypotheses came back model-proposed. Both were committed by the workflow, because
+  `iterations` is a workflow input and the session step writes to the log with `--replace`.
+
+  **The failure is not that a calibration run happened. It is that the artifact could not tell
+  one from the other.** Every one of the three commits carries the same subject
+  (`demo run: session on the frozen dataset`) and writes the same path, so the repository's own
+  record of what it shipped was replaced by an experiment in which the only difference is a
+  number inside the file. The docs were right throughout; the bytes were wrong, and for three
+  days the submission pointed a judge at a log that contradicted every claim made about it —
+  in a project whose entire thesis is that it does not do that.
+
+  Restored from `6022039`, after checking that restoring was actually valid rather than merely
+  desirable. The 09-13 entries attest to three hashes, and all three still describe what is on
+  disk today: `policy_sha256` and `partitions_sha256` recomputed from the working tree match
+  byte for byte, and `dataset_sha256` was re-derived independently from the committed manifest —
+  `sha256` over `symbol|partition|kind|sha256` in the manifest's own sort order — and matches
+  `b0fd26a3…`. The project's own verifier then returns **PASS — 201 entries, chain intact and
+  append-only**, head hash `sha256:956d09b1…`. Nothing the restored log vouches for has moved
+  since it was written, so no verdict in it is stale. Re-running the workflow instead would not
+  have recovered it: `SessionLoop` has changed since 09-13, so a fresh keyless run reproduces
+  *a* session, not *this* one, and the H-0006 demotion is in this one.
+
+  Finding 43: **the demo log has no protection against being overwritten, and no detector.**
+  The workflow verifies the file it just wrote and commits it; nothing compares it against what
+  is already committed, so a run with a smaller `iterations` silently shrinks the submission.
+  The guard is one conditional in the commit step — refuse to commit a log shorter than the
+  committed one unless that is asked for explicitly. Left unbuilt here deliberately: it edits
+  the one workflow the submission depends on, three days before the deadline, and the restore
+  is the fix. It is the first thing to do with the next free hour.
