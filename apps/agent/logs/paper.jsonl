@@ -1,0 +1,16 @@
+# Factor Prover — paper execution log
+#
+# RECONSTRUCTED, NOT CAPTURED LIVE. The session that produced
+# logs/decisions.jsonl ran on 2026-09-13 and kept its paper ledger in memory only, so
+# this file was rebuilt from that log by src/scripts/replay-execution.ts.
+# The Execution Guard and the order-intent builder are imported from the
+# production modules, not reimplemented. Prices are real Bitget 1-minute
+# closes for the timestamps shown, fetched at replay time.
+#
+# No order here was sent anywhere. With no Agent Hub client configured the
+# guard validates and reports allowed=true having sent nothing, which is
+# the simulated fill. CHECK 4 compares the entry price against the same
+# historical close, so it passes at 0.000% by construction.
+#
+{"kind":"order","entry_id":"E-0006","hypothesis_id":"H-0006","factor_id":"F-0001","at":"2026-09-13T17:15:51Z","symbol":"RGOOGLUSDT","side":"buy","notional_usdt":100,"entry_price":337.06,"price_source":"bitget 1m close 2026-09-13T17:06:00Z (72 candles in the 6h window)","allowed":true,"refused_at":null,"refused_reason":null,"detail":"all five checks passed; order NOT sent (no Agent Hub client). Validated notional 100 USDT on RGOOGLUSDT.","checks":[{"check":"CHECK_1_PAPER_TRADING_FLAG","passed":true,"detail":"BITGET_PAPER_TRADING === \"true\""},{"check":"CHECK_2_POSITION_CAP","passed":true,"detail":"0 open + 1 = 1 <= cap 3"},{"check":"CHECK_3_SIZE_CAP","passed":true,"detail":"notional 100 <= cap 100 USDT"},{"check":"CHECK_4_PRICE_SANITY","passed":true,"detail":"entry 337.06 vs live 337.06 (0.000% <= 2%)"},{"check":"CHECK_5_CONFIRMATION","passed":true,"detail":"no Agent Hub client configured — order validated but NOT sent. Set BITGET_API_KEY / _SECRET / _PASSPHRASE to enable paper execution."}],"fill":{"placed":true,"mode":"simulated"}}
+{"kind":"close","entry_id":"E-0008","hypothesis_id":"H-0006","factor_id":"F-0001","at":"2026-09-13T17:15:51Z","reason":"the promotion was withdrawn at E-0008 (p_value_exceeds_bh_threshold); the simulated position closes with it","exit_price":337.06,"price_source":"bitget 1m close 2026-09-13T17:06:00Z"}

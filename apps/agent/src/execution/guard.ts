@@ -70,6 +70,37 @@ export interface OrderIntent {
   hypothesis_id: string;
 }
 
+/**
+ * Build the order a promotion implies.
+ *
+ * EXTRACTED SO THERE IS ONE OF THESE. The session loop and the execution drill
+ * both need to turn a promoted hypothesis into an order intent, and if each
+ * built its own the drill would be demonstrating a flow subtly different from
+ * the one that runs. A drill that reconstructs its own subject proves nothing
+ * about the subject.
+ *
+ * The direction convention lives here too: a `negative` hypothesis expects the
+ * target to fall, so it sells. That mapping is not obvious enough to be
+ * duplicated, and getting it backwards would invert every simulated P&L.
+ */
+export function orderIntentFor(params: {
+  hypothesis_id: string;
+  factor_id: string;
+  target: string;
+  direction: 'positive' | 'negative';
+  notional_usdt: number;
+  entry_price: number;
+}): OrderIntent {
+  return {
+    symbol: params.target,
+    side: params.direction === 'positive' ? 'buy' : 'sell',
+    notional_usdt: params.notional_usdt,
+    entry_price: params.entry_price,
+    factor_id: params.factor_id,
+    hypothesis_id: params.hypothesis_id,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Outcomes
 // ---------------------------------------------------------------------------

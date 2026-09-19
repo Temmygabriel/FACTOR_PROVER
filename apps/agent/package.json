@@ -17,7 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "run-session": "tsx src/scripts/run-session.ts",
-    "verify-log": "tsx src/log/verify.ts --file logs/decisions.jsonl"
+    "verify-log": "tsx src/log/verify.ts --file logs/decisions.jsonl",
+    "replay-execution": "tsx src/scripts/replay-execution.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

@@ -33,6 +33,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { adjudicateHypothesis } from '../gate/gate.js';
 import { runBacktest, type BacktestOutcome } from '../backtest/engine.js';
@@ -54,7 +56,12 @@ import {
 import { CircuitBreaker, type BreakerState } from '../circuit/breaker.js';
 import { ExecutionGuard, type GuardOutcome, type OrderIntent } from '../execution/guard.js';
 import { fetchSpotPrice } from '../execution/prices.js';
-import { describeCapability, loadAgentHubConfig, type HubCapability } from '../execution/agentHub.js';
+import {
+  BgcAgentHubClient,
+  describeCapability,
+  loadAgentHubConfig,
+  type HubCapability,
+} from '../execution/agentHub.js';
 import { loadGatePolicy, loadPartitions, partitionWindow, type GatePolicy } from '../config.js';
 import { fetchCandles, buildPriceSeries } from '../backtest/data.js';
 import { fetchFundingHistory } from '../data/fundingHistory.js';
@@ -111,6 +118,8 @@ export interface SessionLoopOptions {
   sessionId?: string;
   /** Decision log path. Defaults to `<agent>/logs/decisions.jsonl`. */
   logPath?: string;
+  /** Paper-fill path. Defaults to `paper.jsonl` beside `logPath`. */
+  paperLogPath?: string;
   /**
    * The committed record this loop is NOT writing to, served read-only.
    *
@@ -192,6 +201,8 @@ export class SessionLoop {
    * log nobody is writing to.
    */
   readonly logPath: string;
+  /** Where this session's paper fills are written. See `writePaperLog`. */
+  readonly paperLogPath: string;
   /** The published record, served read-only. See `committedLogPath` in the options. */
   readonly committedLogPath: string;
   readonly bus: SessionEventBus;
@@ -238,6 +249,9 @@ export class SessionLoop {
     this.ctx = buildAppendContext({ sessionId: this.sessionId, fdrLevel: this.policy.fdr_level });
     this.logPath = opts.logPath ?? defaultLogPath();
     this.log = new DecisionLog(this.logPath);
+    // Beside the decision log rather than at a fixed path, so a caller who
+    // redirects --out gets both artifacts in the same place.
+    this.paperLogPath = opts.paperLogPath ?? join(dirname(this.logPath), 'paper.jsonl');
 
     // Read-only. Constructing a DecisionLog does not create or touch the file —
     // it reads what is there and remembers the head — so this is safe against a
@@ -249,11 +263,36 @@ export class SessionLoop {
     this.breaker = opts.breaker ?? new CircuitBreaker(this.policy, this.now);
     this.guard =
       opts.guard ??
-      new ExecutionGuard({
-        getOpenPositions: () => this.ledger.getOpenPositionCount(),
-        getPrice: fetchSpotPrice,
-        now: this.now,
-      });
+      (() => {
+        const cfg = loadAgentHubConfig();
+        const cap = describeCapability(cfg);
+        return new ExecutionGuard({
+          getOpenPositions: () => this.ledger.getOpenPositionCount(),
+          getPrice: fetchSpotPrice,
+          now: this.now,
+          /*
+           * THE CLI CLIENT WAS NEVER ATTACHED HERE, and that was a real gap
+           * rather than a deliberate omission. `BgcAgentHubClient` existed,
+           * was tested, and was referenced by nothing in the running system —
+           * so Execution Guard CHECK 5 took its "no Agent Hub client
+           * configured" branch on every order the project has ever evaluated,
+           * and the execution leg was a simulator that could not have reached
+           * Bitget even with credentials present.
+           *
+           * Attached only when `describeCapability` says the whole chain is
+           * configured: paper flag, ENABLE_EXECUTION, all three credentials,
+           * and a resolvable `bgc`. Passing the client unconditionally would
+           * be worse than not passing it — `placeOrder` throws when the flags
+           * are off, so CHECK 5 would report a refusal caused by the wiring
+           * rather than by the order, and a misconfiguration would read as a
+           * risk decision.
+           *
+           * With no credentials this still resolves to `undefined`, which is
+           * the current state and stays the state until someone sets them.
+           */
+          hub: cap.available ? new BgcAgentHubClient(cfg) : undefined,
+        });
+      })();
   }
 
   // -------------------------------------------------------------------------
@@ -408,6 +447,46 @@ export class SessionLoop {
     } finally {
       this.running = false;
       if (this.phase === 'running') this.phase = 'stopped';
+      this.writePaperLog();
+    }
+  }
+
+  /**
+   * Write this session's paper fills to disk.
+   *
+   * WHY THIS EXISTS. The ledger is in-memory, so before this the execution leg
+   * of a session vanished when the process exited. The committed 2026-09-13 run
+   * is the proof: it promoted H-0006, the guard ran five checks on the order,
+   * and none of that survived — the execution history had to be reconstructed
+   * afterwards by `src/scripts/replay-execution.ts`, which is a reconstruction
+   * and says so. A flow whose output is never written down is not a record.
+   *
+   * WHY IT REFUSES TO WRITE AN EMPTY LEDGER. An empty `fills` array is the
+   * normal case — most sessions promote nothing — and writing it would replace
+   * a real execution record with an empty file. That is not hypothetical: the
+   * decision log beside this one was clobbered twice by calibration runs, and
+   * the artifact/docs contradiction it caused took a git-archaeology session to
+   * untangle. So a session with no fills leaves whatever is on disk alone. The
+   * cost is that an empty session produces no file; the cost of the other rule
+   * is a destroyed artifact.
+   *
+   * Overwrites rather than appends: this is a snapshot of one session's book,
+   * not an append-only record. The append-only record is the decision log.
+   */
+  private writePaperLog(): void {
+    const fills = this.ledger.allFills;
+    if (fills.length === 0) return;
+    try {
+      const body = fills.map((f) => JSON.stringify(f)).join('\n');
+      writeFileSync(this.paperLogPath, body + '\n', 'utf8');
+    } catch (err) {
+      // A paper log that cannot be written must not fail the session. The
+      // decisions are the artifact; this is a record of what execution did
+      // with them, and losing it is bad but aborting the run is worse.
+      const detail = err instanceof Error ? err.message : String(err);
+      this.bus.emit('error', `could not write the paper log to ${this.paperLogPath}: ${detail}`, {
+        error: detail,
+      });
     }
   }
 
