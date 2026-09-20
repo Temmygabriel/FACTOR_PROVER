@@ -52,9 +52,13 @@ jobs:
           node-version: '24'
 
       - name: Confirm which credentials arrived
-        # Reports PRESENCE and SHAPE, never a value. A secret that did not
-        # survive the wire is a far more likely explanation for an auth error
-        # than a wrong key, and it is worth ruling out before reading one.
+        # Reports PRESENCE and LENGTH, never any part of a value — not even a
+        # suffix. A secret that did not survive the wire is a far more likely
+        # explanation for an auth error than a wrong key, and length alone
+        # answers that question: a 35-char API key and a 64-char secret key are
+        # recognisable by shape without printing anything that could be
+        # reassembled. An earlier version of this step printed the last four
+        # characters, which is a small leak that buys nothing this does not.
         env:
           BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
           BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
@@ -65,7 +69,7 @@ jobs:
             if [ -z "$val" ]; then
               echo "$v: EMPTY (not set on this repository)"
             else
-              echo "$v: present, ${#val} chars, last 4 = ...${val: -4}"
+              echo "$v: present, ${#val} chars"
             fi
           done
 
