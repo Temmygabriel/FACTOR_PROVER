@@ -139,28 +139,45 @@ jobs:
           BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
         run: |
           BGC="$TOOLCHAIN/node_modules/.bin/bgc"
-          echo "==================================================================="
-          echo "## REAL demo order: market buy 10 USDT RGOOGLUSDT"
-          echo "## no --dry-run. Demo funds only; no real money is involved."
-          echo "==================================================================="
-          set +e
-          "$BGC" order --action place \
-            --category SPOT \
-            --symbol RGOOGLUSDT \
-            --side buy \
-            --orderType market \
-            --qty 10 \
-            --paper-trading 2>&1 | tee /tmp/order.json
-          code=$?
-          set -e
-          echo "--- exit code: $code"
+
+          attempt() {
+            label="$1"; shift
+            echo ""
+            echo "==================================================================="
+            echo "## REAL demo order: $label"
+            echo "## no --dry-run. Demo funds only; no real money is involved."
+            echo "==================================================================="
+            set +e
+            "$@" 2>&1 | tee "/tmp/order-$label.json"
+            echo "--- exit code: $?"
+            set -e
+          }
+
+          # 1. The instrument this project actually trades. Already known to be
+          #    refused — "papTradingService not support RWA" — but re-run here so
+          #    the refusal sits beside the acceptance below in one log, rather
+          #    than being a claim about a different run.
+          attempt "RGOOGLUSDT-rToken" \
+            "$BGC" order --action place \
+              --category SPOT --symbol RGOOGLUSDT --side buy \
+              --orderType market --qty 10 --paper-trading
+
+          # 2. A non-RWA spot instrument, same guard path, same size. If the demo
+          #    service accepts this, then the pipeline — guard, command vector,
+          #    signing, exchange — is proven end to end, and the ONLY thing
+          #    blocking the real target is Bitget's RWA restriction rather than
+          #    anything in this project.
+          attempt "BTCUSDT-non-RWA" \
+            "$BGC" order --action place \
+              --category SPOT --symbol BTCUSDT --side buy \
+              --orderType market --qty 10 --paper-trading
+
           echo ""
-          echo "=================== THE ENVELOPE, AS RETURNED ==================="
-          echo "This is the shape agentHub.ts parseResult has never seen. It guesses"
-          echo "that a live placement puts its order id at data.orderId; if the body"
-          echo "below puts it somewhere else, that guess is wrong and must be fixed."
+          echo "=================== WHAT THE BODIES ACTUALLY LOOK LIKE ==========="
+          echo "agentHub.ts parseResult has never seen a real placement envelope and"
+          echo "guesses the order id lives at data.orderId. The bodies above are the"
+          echo "evidence for whether that guess is right."
           echo "================================================================"
-          cat /tmp/order.json
 
       - name: Summary
         if: always()
