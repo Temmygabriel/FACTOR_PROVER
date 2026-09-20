@@ -483,16 +483,34 @@ export class BgcAgentHubClient {
     opts: { confirm: boolean },
   ): BgcOrderResult {
     const raw = { stdout, stderr, exitCode };
-    const trimmed = stdout.trim();
+
+    /*
+     * WHICH STREAM CARRIES THE ENVELOPE — measured, not assumed.
+     *
+     * This function used to read stdout ONLY, and on 2026-09-20 a real placement
+     * attempt showed why that is wrong. On a REFUSAL the CLI writes its JSON
+     * envelope to STDERR and leaves stdout empty. So the error branch below
+     * could never fire for a real refusal: every one of them fell into the
+     * "returned no output" branch instead, which discarded the structured error
+     * — `type`, `code`, `message` — and kept a 300-character suffix of it. The
+     * run that found this is 35527828818 and the verbatim bodies are in
+     * logs/paper-live.jsonl, including both refusals quoted in full.
+     *
+     * stderr is consulted only when stdout is EMPTY, so a success envelope is
+     * still read from stdout, and a CLI that writes progress chatter to stderr
+     * beside a good stdout cannot have that chatter mistaken for the result.
+     *
+     * This is the second thing about this module that only a real placement
+     * could have taught. The first was the grammar; see `buildArgv`.
+     */
+    const trimmed = stdout.trim() !== '' ? stdout.trim() : stderr.trim();
 
     if (trimmed === '') {
       return {
         confirmationRequired: false,
         accepted: false,
         orderId: null,
-        detail:
-          `the CLI returned no output (exit ${exitCode})` +
-          (stderr.trim() ? `; stderr: ${stderr.trim().slice(0, 300)}` : ''),
+        detail: `the CLI returned no output on either stream (exit ${exitCode})`,
         raw,
       };
     }

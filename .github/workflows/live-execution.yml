@@ -109,6 +109,42 @@ jobs:
         # refuse for a reason that has nothing to do with the venue.
         run: command -v bgc && bgc --version
 
+      - name: Discover what the venue says about order sizing
+        # Added after run 35527828818, which produced this refusal from Bitget:
+        #
+        #   Parameter verification exception size checkBDScale error
+        #   value=0.00123304 checkScale=6
+        #
+        # `qtyFor` formats a SELL quantity with toFixed(8), and its comment
+        # asserts 8 is "the base-coin precision Bitget uses". That assertion is
+        # now falsified: BTCUSDT's scale is 6, so the venue rejects the quantity
+        # for having more decimals than the instrument has. The notional was
+        # fundable and the side was right — the order died on decimal places.
+        #
+        # Guessing a smaller constant would just move the problem to whichever
+        # instrument wants 8. So this asks the CLI where the per-symbol scale
+        # actually lives, and the answer decides how `qtyFor` is fixed.
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "==================================================================="
+            echo "## $label"
+            echo "==================================================================="
+            set +e
+            "$@" 2>&1
+            echo "--- exit code: $?"
+            set -e
+          }
+          probe "market tool contract" bgc discover --tool market
+          probe "search: symbol" bgc discover --search symbol
+          probe "search: precision" bgc discover --search precision
+          probe "search: scale" bgc discover --search scale
+
       - name: Run the live execution
         env:
           BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
