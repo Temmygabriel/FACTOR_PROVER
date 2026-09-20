@@ -1,0 +1,157 @@
+name: Probe Agent Hub auth paths
+
+# Answers ONE question, and it is a question about doors rather than about flags:
+#
+#   Which credential does `bgc` actually accept, and is there an OAuth path
+#   that needs no manually-created API key at all?
+#
+# WHY THIS EXISTS. The hackathon docs describe an "Agentic Account" that is
+# OAuth-based with no manual API key. The project currently assumes the only
+# path is a Bitget exchange API key + secret + passphrase. Those two claims
+# cannot both be the whole story, and the difference decides whether a human
+# has to go and create a key by hand before anything can be placed.
+#
+# WHY IT RUNS IN THE CLOUD. `bgc` ships as an npm package. The dev machine has
+# 8GB of RAM and this project has deliberately never run `npm install` on it.
+# A GitHub runner is free, disposable, and where this repository already does
+# its heavy work.
+#
+# WHY IT IS SAFE. No `secrets.*` context appears anywhere in this file. The
+# credential check runs FIRST, before any CLI does, so every probe below is
+# made in an environment with nothing to authenticate as and no account for a
+# request to reach. `authorize_start`, if it exists, can only print a URL in a
+# runner with no browser and no user to consent.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Ask bgc which auth paths exist
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Confirm no Bitget credentials are reachable
+        run: |
+          leaked=0
+          for v in BITGET_API_KEY BITGET_SECRET_KEY BITGET_PASSPHRASE \
+                   BITGET_API_SECRET BITGET_API_PASSPHRASE BITGET_ACCESS_KEY; do
+            if [ -n "${!v:-}" ]; then
+              echo "::error::$v is set in this job — the probes are not credential-free"
+              leaked=1
+            fi
+          done
+          if [ "$leaked" -ne 0 ]; then exit 1; fi
+          for f in "$HOME/.bgc/config.json" "$HOME/.bitget/credentials"; do
+            if [ -e "$f" ]; then
+              echo "::error::$f exists — a credential file would make the probes authenticated"
+              exit 1
+            fi
+          done
+          echo "confirmed: no Bitget credentials, in the environment or on disk"
+
+      - name: Install the CLI outside the repository
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -3
+          echo "--- resolved version ---"
+          node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Probe
+        run: |
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "==================================================================="
+            echo "## $label"
+            echo "## \$ $*"
+            echo "==================================================================="
+            set +e
+            "$@" 2>&1
+            echo "--- exit code: $?"
+            set -e
+          }
+
+          probe "version"        "$BGC" --version
+          probe "top-level help" "$BGC" --help
+
+          # The CLI's own documentation of itself. This is the authority on
+          # which tools exist; the top-level help truncates descriptions.
+          probe "discover: everything" "$BGC" discover
+
+          # --- THE QUESTION: is there an OAuth / Agentic Account path? --------
+          #
+          # Probed by NAME rather than by reading, because a verb that does not
+          # exist answers with a parse error and a verb that does answers with a
+          # contract. The names come from the hackathon docs; if none of them
+          # exist, the docs are describing a surface this CLI version does not
+          # ship and the manual-key path is the only one.
+          for verb in authorize_start authorize get_auth_status auth_status login whoami; do
+            probe "verb: $verb" "$BGC" "$verb"
+          done
+
+          probe "discover: auth tool" "$BGC" discover --tool auth
+          probe "discover: account tool" "$BGC" discover --tool account
+
+          # --- Grep the whole surface for the words that decide this ---------
+          #
+          # A verb list is not a documentation search. If any auth-related word
+          # appears anywhere in the CLI's own output, it is printed here rather
+          # than left for a reader to spot.
+          echo ""
+          echo "==================================================================="
+          echo "## every mention of auth / oauth / agentic / demo across the CLI surface"
+          echo "==================================================================="
+          set +e
+          {
+            "$BGC" --help 2>&1
+            "$BGC" discover 2>&1
+            "$BGC" discover --tool order 2>&1
+            "$BGC" discover --tool order --action place 2>&1
+          } | grep -i -n "auth\|oauth\|agentic\|demo\|paper\|credential\|api.key\|access.key" || echo "(no matches)"
+          set -e
+
+          # --- What the order verb requires, restated ------------------------
+          probe "discover: order place params" "$BGC" discover --tool order --action place
+          probe "discover: market tickers params" "$BGC" discover --tool market --action tickers
+
+          # --- Is the instrument we would trade even reachable? --------------
+          #
+          # Public endpoint, no credential. `RGOOGLUSDT` is the symbol the one
+          # committed promotion (H-0006) targets, so this is the instrument the
+          # execution leg would actually have to fill.
+          probe "RGOOGLUSDT in SPOT"         "$BGC" market --action tickers --category SPOT --symbol RGOOGLUSDT
+          probe "RGOOGLUSDT in USDT-FUTURES" "$BGC" market --action tickers --category USDT-FUTURES --symbol RGOOGLUSDT
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Agent Hub auth probe"
+            echo
+            echo "Asked \`bgc\` which authentication paths it actually ships:"
+            echo "whether an OAuth / Agentic Account route exists, or whether a"
+            echo "manually created exchange API key is the only door."
+            echo
+            echo "- no Bitget credentials were present (checked before any CLI ran)"
+            echo "- no \`secrets.*\` is referenced anywhere in the workflow"
+            echo "- full output is in the 'Probe' step log"
+          } >> "$GITHUB_STEP_SUMMARY"
