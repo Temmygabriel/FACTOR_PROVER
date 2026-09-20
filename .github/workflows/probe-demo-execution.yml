@@ -113,10 +113,42 @@ jobs:
           probe "demo account overview" \
             "$BGC" account_overview --coin USDT --paper-trading
 
-          # Does the demo environment even know this instrument? Public-ish, but
-          # routed to demo so the answer is about demo rather than about live.
+          # WHY THE TRANSFER TOOL IS BEING ASKED ABOUT. The demo account reports
+          # a six-figure equity but a spot BTC buy of 10 USDT answers
+          # "Insufficient balance". `account_overview` returns TWO wallets:
+          # `assets` (the trading account) and `fundingAssets` (the funding
+          # wallet). The USDT sits in the second, and a spot order settles from
+          # the first. So the balance is real and in the wrong pocket, which is
+          # a transfer question rather than a funding question.
+          probe "discover: transfer_funds contract" \
+            "$BGC" discover --tool transfer_funds
+
+          probe "search: transfer operations" "$BGC" discover --search transfer
+
+          # Try the move, in two spellings. A wrong parameter set answers with
+          # the parameters it wanted, so a failed attempt is itself the
+          # documentation for the next one — this is cheaper than a second
+          # five-minute pipeline run to read a contract first.
+          #
+          # `--paper-trading` carries, so this moves virtual USDT between two
+          # pockets of the demo account and cannot touch a real balance.
+          probe "transfer attempt A: minimal" \
+            "$BGC" transfer_funds --action internal --coin USDT --amount 100 --paper-trading
+
+          probe "transfer attempt B: with named accounts" \
+            "$BGC" transfer_funds --action internal --coin USDT --amount 100 \
+              --fromAccount funding --toAccount spot --paper-trading
+
+          # Did either land? This is the same call as above, so a difference
+          # between the two readings is the transfer and nothing else.
+          probe "demo account overview (after transfer attempts)" \
+            "$BGC" account_overview --coin USDT --paper-trading
+
           probe "demo tickers: RGOOGLUSDT SPOT" \
             "$BGC" market --action tickers --category SPOT --symbol RGOOGLUSDT --paper-trading
+
+          probe "demo tickers: BTCUSDT SPOT" \
+            "$BGC" market --action tickers --category SPOT --symbol BTCUSDT --paper-trading
 
           # The order this project would actually send, as a preview. qty is
           # quote coin for a market BUY, so 10 is 10 USDT of notional — the same
