@@ -1,0 +1,171 @@
+name: Probe demo execution
+
+# Answers one question: can this project place a SPOT order for an rToken in
+# Bitget's demo environment?
+#
+# WHY THIS IS THE QUESTION. The Agent Hub CLI's `--paper-trading` routes writes
+# to Bitget's Demo environment. Bitget's own demo material is written about
+# FUTURES, while every instrument this project trades is SPOT: the rTokens
+# (RGOOGLUSDT and friends) return a live price under `--category SPOT` and
+# "Trading pair does not exist" under USDT-FUTURES. So whether the demo
+# environment can fill the thing this project actually trades is genuinely
+# unknown, and it decides whether a demo key is any use here at all.
+#
+# The probe was run before this one (run 35525988666) and settled the CLI's
+# surface: `authorize_start` / `authorize_wait` / `get_auth_status` exist — a
+# real OAuth "Agentic sub-account" path needing no manual API key, but it
+# drives a LOCAL callback server (127.0.0.1) and so cannot run in CI. This
+# workflow takes the other door: the demo API key.
+#
+# WHY IT IS SAFE. Every private call carries `--paper-trading`, so nothing here
+# can reach a live account even if a live key were ever put in these secrets.
+# The order is `--dry-run` unless the `place_order` input is explicitly ticked,
+# and the notional is the project's own 10 USDT floor rather than a round
+# number that would look like a decision.
+
+on:
+  workflow_dispatch:
+    inputs:
+      place_order:
+        description: >-
+          Actually place a small real DEMO order (virtual funds, no real money).
+          Leave false to only preview. Tick it once the preview shows the demo
+          environment accepts SPOT rTokens.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Can demo execution fill a SPOT rToken?
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Confirm which credentials arrived
+        # Reports PRESENCE and SHAPE, never a value. A secret that did not
+        # survive the wire is a far more likely explanation for an auth error
+        # than a wrong key, and it is worth ruling out before reading one.
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          for v in BITGET_API_KEY BITGET_SECRET_KEY BITGET_PASSPHRASE; do
+            val="${!v:-}"
+            if [ -z "$val" ]; then
+              echo "$v: EMPTY (not set on this repository)"
+            else
+              echo "$v: present, ${#val} chars, last 4 = ...${val: -4}"
+            fi
+          done
+
+      - name: Install the CLI outside the repository
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -3
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Probe the demo environment
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "==================================================================="
+            echo "## $label"
+            echo "==================================================================="
+            set +e
+            "$@" 2>&1
+            echo "--- exit code: $?"
+            set -e
+          }
+
+          # Does a local OAuth credential exist? Expected false — this run uses
+          # the demo API key, which is the other door entirely.
+          probe "oauth auth status (expect authorized:false)" "$BGC" get_auth_status
+
+          # Is the demo account reachable with these keys, and does it hold
+          # virtual USDT? This is the auth test. A demo account normally starts
+          # with 50,000 virtual USDT.
+          probe "demo account overview" \
+            "$BGC" account_overview --coin USDT --paper-trading
+
+          # Does the demo environment even know this instrument? Public-ish, but
+          # routed to demo so the answer is about demo rather than about live.
+          probe "demo tickers: RGOOGLUSDT SPOT" \
+            "$BGC" market --action tickers --category SPOT --symbol RGOOGLUSDT --paper-trading
+
+          # The order this project would actually send, as a preview. qty is
+          # quote coin for a market BUY, so 10 is 10 USDT of notional — the same
+          # shape `qtyFor` in agentHub.ts builds.
+          probe "PREVIEW: market buy 10 USDT RGOOGLUSDT (demo, dry-run)" \
+            "$BGC" order --action place \
+              --category SPOT \
+              --symbol RGOOGLUSDT \
+              --side buy \
+              --orderType market \
+              --qty 10 \
+              --paper-trading \
+              --dry-run
+
+      - name: Place a real demo order
+        if: ${{ inputs.place_order }}
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+          echo "==================================================================="
+          echo "## REAL demo order: market buy 10 USDT RGOOGLUSDT"
+          echo "## no --dry-run. Demo funds only; no real money is involved."
+          echo "==================================================================="
+          set +e
+          "$BGC" order --action place \
+            --category SPOT \
+            --symbol RGOOGLUSDT \
+            --side buy \
+            --orderType market \
+            --qty 10 \
+            --paper-trading 2>&1 | tee /tmp/order.json
+          code=$?
+          set -e
+          echo "--- exit code: $code"
+          echo ""
+          echo "=================== THE ENVELOPE, AS RETURNED ==================="
+          echo "This is the shape agentHub.ts parseResult has never seen. It guesses"
+          echo "that a live placement puts its order id at data.orderId; if the body"
+          echo "below puts it somewhere else, that guess is wrong and must be fixed."
+          echo "================================================================"
+          cat /tmp/order.json
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Demo execution probe"
+            echo
+            echo "- every private call carried \`--paper-trading\`"
+            echo "- order previewed with \`--dry-run\`; real placement only if the"
+            echo "  \`place_order\` input was ticked"
+            echo "- full output is in the step logs above"
+          } >> "$GITHUB_STEP_SUMMARY"
