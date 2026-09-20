@@ -1,0 +1,175 @@
+name: Live paper execution
+
+# Runs apps/agent/src/scripts/live-execution.ts against Bitget's DEMO
+# environment, with real credentials and a real `bgc` binary.
+#
+# WHAT THIS SETTLES. `agentHub.ts` says of itself that the command vector is
+# verified and a live placement is not — `LIVE_PLACEMENT_OBSERVED = false`. The
+# committed `logs/paper.jsonl` says the same thing in its own header:
+# "RECONSTRUCTED, NOT CAPTURED LIVE ... No order here was sent anywhere." So the
+# project has a guard, a client and a parser, and not one byte of evidence about
+# what the venue does with an order they produce. This workflow produces that
+# byte-for-byte, and the artifact it uploads is the record.
+#
+# TWO ORDERS, TWO DIFFERENT QUESTIONS.
+#
+#   1. `live_order` — the order the committed decision log implies. That is
+#      E-0006 / H-0006, a BUY of RGOOGLUSDT. It is the project's own promoted
+#      hypothesis, executed through the production guard and client.
+#
+#   2. `venue_check` — one order on an instrument of the caller's choosing,
+#      recorded under its own `kind` so it can never be read as a promotion. It
+#      exists because a refusal on (1) has two possible causes: something wrong
+#      with this project, or something about the venue. Without (2) those are
+#      indistinguishable and a refusal would be unexplained.
+#
+# WHY THE VENUE CHECK DEFAULTS TO A SELL. `account_overview --paper-trading`
+# returns two wallets. The trading account holds BTC, ETH, USD and USDGO; the
+# funding wallet holds the only USDT, and `transfer_funds` answers HTTP 404 in
+# demo, so the USDT cannot be moved across. A market BUY needs quote coin (USDT)
+# in the trading account and there is none; a market SELL needs base coin (BTC)
+# and there is 0.5 available. So a sell is the order this account can actually
+# fund, and the side is a fact about the demo wallet rather than a preference.
+#
+# WHY IT IS SAFE. Every private call the script can cause carries
+# `--paper-trading`, which routes to the Demo environment — there is no flag
+# combination in this workflow that reaches a funded account. `describeCapability`
+# is checked before the guard is built and the script exits without sending if
+# execution is not fully configured; it does not degrade to a simulation.
+#
+# NO CREDENTIAL IS EVER PRINTED. The secrets are passed to the run step and read
+# by the CLI from the environment. Nothing in this file echoes them, and no part
+# of a value — not a prefix, not a suffix, not a length — is written to the log.
+# The one thing reported is presence, by name, so a missing secret is
+# distinguishable from a rejected one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      venue_check:
+        description: >-
+          SYMBOL:side for the one non-promoted order, e.g. BTCUSDT:sell. Same
+          guard, same client, recorded separately. Leave empty to run only the
+          promoted order.
+        required: false
+        default: 'BTCUSDT:sell'
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: Place the promoted order in demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Confirm which credentials arrived
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          for v in BITGET_API_KEY BITGET_SECRET_KEY BITGET_PASSPHRASE; do
+            val="${!v:-}"
+            if [ -z "$val" ]; then
+              echo "$v: EMPTY (not set on this repository)"
+            else
+              echo "$v: present"
+            fi
+          done
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install the Agent Hub CLI outside the repository
+        # Into $RUNNER_TEMP, never the checkout: `bgc` has its own dependency
+        # tree and installing it over the project's would make this run's
+        # behaviour depend on a merge of two lockfiles that nobody chose.
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -3
+          echo "$TOOLCHAIN/node_modules/.bin" >> "$GITHUB_PATH"
+          node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
+
+      - name: Show the CLI is resolvable before trusting the run
+        # `describeCapability` treats "a bgc binary that actually exists" as one
+        # of the three switches. If this step is empty, the run below would
+        # refuse for a reason that has nothing to do with the venue.
+        run: command -v bgc && bgc --version
+
+      - name: Run the live execution
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+          # The two switches. Stated explicitly rather than inherited, because
+          # the whole run is about what happens when they are ON, and a run that
+          # silently fell back to the off state would produce a file that looks
+          # like evidence of a placement and is evidence of a simulation.
+          BITGET_PAPER_TRADING: 'true'
+          ENABLE_EXECUTION: 'true'
+        run: |
+          set -o pipefail
+          npx tsx apps/agent/src/scripts/live-execution.ts \
+            --log apps/agent/logs/decisions.jsonl \
+            --out apps/agent/logs/paper-live.jsonl \
+            --venue-check "${{ inputs.venue_check }}" 2>&1 | tee live.log
+          echo "--- exit: $? ---"
+
+      - name: Show what the venue actually said
+        # The point of the whole workflow. `parseResult` has never seen a real
+        # placement envelope and guesses the order id lives at `data.orderId`;
+        # this prints the raw bodies that settle it. Printed with `jq` where it
+        # parses and raw where it does not, because a body that fails to parse
+        # is itself the finding.
+        if: always()
+        run: |
+          F=apps/agent/logs/paper-live.jsonl
+          if [ ! -f "$F" ]; then
+            echo "no record was written — the script refused before sending"
+            exit 0
+          fi
+          echo "=== record summary ==="
+          tail -n +1 "$F" | grep -v '^#' | while read -r line; do
+            echo "$line" | jq -r '"kind=\(.kind) allowed=\(.allowed) refused_at=\(.refused_at // "-") refused_reason=\(.refused_reason // "-")"'
+            echo "$line" | jq -r '.cli_calls[]? | "  CLI \(.phase) exit=\(.exit_code)\n  stdout: \(.stdout)"'
+          done
+
+      - name: Upload the execution record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-live
+          path: apps/agent/logs/paper-live.jsonl
+          if-no-files-found: warn
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Live paper execution"
+            echo
+            echo "- every private call carried \`--paper-trading\` (demo funds only)"
+            echo "- \`live_order\` = the committed promotion, executed for real"
+            echo "- \`venue_check\` = \`${{ inputs.venue_check }}\`, a non-promoted order"
+            echo "  on an instrument this demo wallet can actually fund"
+            echo
+            if [ -f apps/agent/logs/paper-live.jsonl ]; then
+              echo '```'
+              grep -v '^#' apps/agent/logs/paper-live.jsonl \
+                | jq -r '"\(.kind): \(.symbol) \(.side) -> allowed=\(.allowed) refused_at=\(.refused_at // "-")"'
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
