@@ -2,8 +2,9 @@
  * Bitget Agent Hub client.
  *
  * ============================================================================
- * STATUS: the command vector is VERIFIED against the real CLI. No live
- * placement has ever been made, so that part is still NOT.
+ * STATUS: the command vector is VERIFIED against the real CLI, and orders have
+ * now been SENT and ANSWERED by the demo venue. No order has ever been
+ * ACCEPTED, so no fill has been observed.
  * ============================================================================
  *
  * WHAT "VERIFIED" MEANS HERE, AND HOW. On 2026-09-17 the CLI was installed from
@@ -25,16 +26,35 @@
  *   `bgc <tool> --action <name> --<param> <value>` (it replaced
  *   `bgc <module> <tool>`). Run `bgc discover`.
  *
- * WHAT REMAINS UNVERIFIED, STATED NARROWLY. No order has been placed, in paper
- * or otherwise, because the project holds no Bitget demo credentials. Every
- * confirmation above was obtained with `--dry-run`, which the CLI answers BEFORE
- * authentication — the dry-run probes returned a full `wouldSend` preview with
- * `authorized: false` and no credentials in the environment at all. So what is
- * proven is that the REQUEST is well-formed and that the CLI accepts every flag
- * this file passes. What is NOT proven is that the demo environment accepts
- * these symbols, or what a real placement returns. `unverified` in
- * `describeCapability` reports exactly that and nothing wider — it is not a
- * blanket disclaimer over the parts that were checked.
+ * WHAT A REAL PLACEMENT THEN TAUGHT, ON 2026-09-20. With demo credentials in
+ * hand the module was finally run for real, twice, by
+ * `src/scripts/live-execution.ts`; the workflow is
+ * `.github/workflows/live-execution.yml` and the run is 35527828818. Two more
+ * assumptions died, and neither could have been killed by a dry run:
+ *
+ *   1. THE ENVELOPE ARRIVES ON STDERR, NOT STDOUT, when the venue refuses.
+ *      `parseResult` read stdout only, so its error branch could never fire for
+ *      a real refusal — every one fell through to "returned no output" and lost
+ *      the structured error. Fixed there, with the bodies quoted.
+ *
+ *   2. `qty` HAS A PER-INSTRUMENT, PER-SIDE PRECISION. `toFixed(8)` was
+ *      hardcoded and its comment claimed 8 was the base-coin precision Bitget
+ *      uses. BTCUSDT allows 6 decimals on a base quantity and 8 on a quote
+ *      amount; RGOOGLUSDT allows 4 and 6. The venue refused a BTCUSDT sell with
+ *      "size checkBDScale error value=0.00123304 checkScale=6" — a fundable
+ *      order on the correct side, killed by decimal places. `fetchSpotPrecision`
+ *      now reads it from the instrument; fixed at `qtyFor`.
+ *
+ * WHAT REMAINS UNVERIFIED, STATED NARROWLY. No order has been ACCEPTED. Both
+ * placements above were refused — one because every instrument this project
+ * trades is an rToken and the demo venue answers "papTradingService not support
+ * RWA", the other because of the precision bug since fixed. So what is proven
+ * is that the request is well-formed, that the CLI accepts every flag passed,
+ * that a signed request reaches the venue, and what the venue's refusal
+ * envelope looks like. What is NOT proven is the success path: `parseResult`
+ * still infers where an accepted placement puts its order id rather than
+ * knowing. `LIVE_PLACEMENT_EVIDENCE` carries exactly that and nothing wider —
+ * it is not a blanket disclaimer over the parts that were checked.
  *
  * Agent Hub is a CLI (`bgc`) taking `--paper-trading` (routes to the Demo
  * environment, and per its own help "needs demo credentials"), `--dry-run`,
@@ -62,6 +82,7 @@ import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { OrderIntent } from './guard.js';
+import { fetchSpotPrecision, type SpotPrecision } from './prices.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -126,6 +147,37 @@ function extraArgs(env: Record<string, string | undefined>): string[] {
   return raw ? raw.split(/\s+/).filter(Boolean) : [];
 }
 
+/**
+ * Format `value` with at most `scale` decimals, rounding DOWN.
+ *
+ * The CLI types `qty` as a string, so a JS number arriving as `1e-7` would be a
+ * parse error at best — hence `toFixed`, which also pins the exact number of
+ * decimals the venue wants.
+ *
+ * Two refusals rather than two defaults, because both failure modes below are
+ * silent otherwise. A `NaN` reaching `toFixed` produces the literal string
+ * "NaN" as an order quantity; a quantity that truncates to zero is one the
+ * venue rejects while the log would show a confident, sized order.
+ */
+function truncateTo(value: number, scale: number, symbol: string, unit: string): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ExecutionDisabledError(
+      `refusing to size an order for ${symbol}: the ${unit}-coin quantity derived from the ` +
+        `notional is ${value}, which is not a positive number.`,
+    );
+  }
+  const factor = 10 ** scale;
+  const truncated = Math.floor(value * factor) / factor;
+  if (truncated <= 0) {
+    throw new ExecutionDisabledError(
+      `refusing to size an order for ${symbol}: ${value} in ${unit} coin truncates to 0 at ` +
+        `${scale} decimal places, the precision this instrument allows. The order would be ` +
+        `sent with a zero quantity and rejected; it is refused here instead.`,
+    );
+  }
+  return truncated.toFixed(scale);
+}
+
 // ---------------------------------------------------------------------------
 // Capability reporting
 // ---------------------------------------------------------------------------
@@ -181,20 +233,36 @@ export interface HubCapability {
 }
 
 /**
- * Whether an order has ever been observed leaving this code.
+ * What has actually been observed leaving this code.
  *
- * Not a configuration flag, because it is not a configuration question — it is
- * a fact about what has been done, and the answer is that nothing has. The
+ * Not a configuration flag, because it is not a configuration question. The
  * REQUEST this module builds IS verified against the real CLI (4 separate
- * errors found and corrected; see the module header). What is missing is the
- * RESPONSE to a real order, which needs demo credentials this project does not
- * hold.
+ * errors found and corrected; see the module header).
  *
- * It becomes false when someone runs one placement and records it. At that
- * point it should be replaced by a citation of that record rather than flipped,
- * because "we did it once" is only worth what the record of it is worth.
+ *   'none'          — no order has ever been sent. What this said until
+ *                     2026-09-20, and until then it was true.
+ *   'refusals_only' — orders HAVE been sent and the venue HAS answered, and
+ *                     every answer so far is a refusal. The response envelope
+ *                     and the refusal path are therefore observed; the success
+ *                     branch of `parseResult` is not, and neither is a fill.
+ *   'accepted'      — a placement was accepted and its order id was read back.
+ *
+ * WHY THIS IS NO LONGER A BOOLEAN, AND WHY IT WAS NOT SIMPLY FLIPPED. The
+ * previous version was `LIVE_PLACEMENT_OBSERVED = false` and its own comment
+ * said it "becomes false when someone runs one placement and records it", and
+ * that it should "be replaced by a citation of that record rather than flipped,
+ * because 'we did it once' is only worth what the record of it is worth". That
+ * instruction was followed rather than paraphrased.
+ *
+ * Run 35527828818 placed two real orders in the demo environment. Both were
+ * refused, and the verbatim bodies are committed at logs/paper-live.jsonl. A
+ * boolean flipped to true by that run would report this integration as verified
+ * on the strength of two failures — which is exactly how a project comes to
+ * claim an execution leg it has never once seen work.
  */
-const LIVE_PLACEMENT_OBSERVED = false;
+type PlacementEvidence = 'none' | 'refusals_only' | 'accepted';
+
+const LIVE_PLACEMENT_EVIDENCE: PlacementEvidence = 'refusals_only';
 
 /**
  * Probe whether paper execution is actually possible here.
@@ -261,12 +329,15 @@ export function describeCapability(
   const verified =
     'The request vector IS verified against the real CLI (@bitget-ai/bitget-agent-cli 3.0.0, ' +
     'bitget-agent-sdk 3.1.0): every flag this module passes was accepted in dry-run, which the ' +
-    'CLI answers before authentication. What is NOT verified is a live placement — no order has ' +
-    'been placed, in paper or otherwise, because no demo credentials exist here.';
+    'CLI answers before authentication. Two real orders have since been placed in the demo ' +
+    'environment and answered by the venue (run 35527828818; verbatim bodies committed at ' +
+    'logs/paper-live.jsonl), so the response envelope and the refusal path are verified too. ' +
+    'What is NOT verified is an ACCEPTED placement: no fill has ever been observed, so where ' +
+    'the venue puts an order id is still inferred rather than known.';
 
   return {
     available,
-    unverified: !LIVE_PLACEMENT_OBSERVED,
+    unverified: LIVE_PLACEMENT_EVIDENCE !== 'accepted',
     detail:
       (available
         ? 'paper execution appears CONFIGURED'
@@ -300,17 +371,24 @@ export interface BgcOrderResult {
 export class BgcAgentHubClient {
   private readonly cfg: AgentHubConfig;
   private readonly env: Record<string, string | undefined>;
+  /**
+   * Where instrument precision comes from. Injected so a test can size an order
+   * without a network, in the same style as Execution Guard's `getPrice`.
+   */
+  private readonly getPrecision: (symbol: string) => Promise<SpotPrecision>;
 
   constructor(
     cfg: AgentHubConfig = loadAgentHubConfig(),
     env: Record<string, string | undefined> = process.env,
+    getPrecision: (symbol: string) => Promise<SpotPrecision> = fetchSpotPrecision,
   ) {
     this.cfg = cfg;
     this.env = env;
+    this.getPrecision = getPrecision;
   }
 
   /**
-   * Order size in the unit the CLI wants for this side.
+   * Order size, in the unit AND at the precision the CLI wants for this side.
    *
    * THE CONVERSION IS NOT COSMETIC. `qty` does not mean one thing:
    *
@@ -330,13 +408,28 @@ export class BgcAgentHubClient {
    * The guard would have approved the notional it was shown. So this refuses
    * rather than guesses when the price it needs is not usable.
    *
-   * The string form is not incidental: the CLI types `qty` as a string, and a
-   * JS number reaching it as `1e-7` for a small quantity would be a parse error
-   * at best. It is formatted to a fixed 8 decimals — the base-coin precision
-   * Bitget uses — rather than left to `String(n)`.
+   * AND THE PRECISION IS A SECOND, INDEPENDENT THING, learned the hard way on
+   * 2026-09-20. This formatted every quantity with `toFixed(8)` and the comment
+   * claimed 8 was "the base-coin precision Bitget uses". A real order disproved
+   * that: the venue refused a BTCUSDT sell with
+   *
+   *   Parameter verification exception size checkBDScale error
+   *   value=0.00123304 checkScale=6
+   *
+   * The notional was fundable and the side was correct. The order died on
+   * decimal places. The precision is per-instrument AND per-side — BTCUSDT
+   * allows 6 decimals on a base quantity but 8 on a quote amount, RGOOGLUSDT
+   * allows 4 and 6 — so no constant can be right and it has to be read from the
+   * instrument. `fetchSpotPrecision` does that; see its header for the numbers.
+   *
+   * Rounding is DOWN, never to nearest. The notional being converted is one the
+   * guard has already approved at CHECK 3, and rounding up would send an order
+   * marginally larger than the one that passed. Truncation can only send less.
    */
-  private qtyFor(order: OrderIntent): string {
-    if (order.side === 'buy') return order.notional_usdt.toFixed(8);
+  private qtyFor(order: OrderIntent, precision: SpotPrecision): string {
+    if (order.side === 'buy') {
+      return truncateTo(order.notional_usdt, precision.quotePrecision, order.symbol, 'quote');
+    }
 
     // A sell needs a price to convert notional into base coin.
     const price = order.entry_price;
@@ -347,7 +440,12 @@ export class BgcAgentHubClient {
           `Execution Guard CHECK 4 is supposed to have refused this order already.`,
       );
     }
-    return (order.notional_usdt / price).toFixed(8);
+    return truncateTo(
+      order.notional_usdt / price,
+      precision.quantityPrecision,
+      order.symbol,
+      'base',
+    );
   }
 
   /**
@@ -385,7 +483,7 @@ export class BgcAgentHubClient {
    * must be visibly unconfirmed on the command line, so that a log of the argv
    * shows which phase it was.
    */
-  private buildArgv(order: OrderIntent, opts: { confirm: boolean }): string[] {
+  private buildArgv(order: OrderIntent, opts: { confirm: boolean }, precision: SpotPrecision): string[] {
     const argv = [
       'order',
       '--action', 'place',
@@ -393,7 +491,7 @@ export class BgcAgentHubClient {
       '--symbol', order.symbol,
       '--side', order.side,
       '--orderType', 'market',
-      '--qty', this.qtyFor(order),
+      '--qty', this.qtyFor(order, precision),
       // Fixed and non-removable, whatever BGC_ORDER_ARGS says.
       '--paper-trading',
     ];
@@ -423,7 +521,33 @@ export class BgcAgentHubClient {
       );
     }
 
-    const argv = this.buildArgv(order, opts);
+    /*
+     * Read the instrument's precision BEFORE building the command line, and let
+     * a failure here abort the order.
+     *
+     * This is deliberately not wrapped in a try/catch that falls back to a
+     * default. Any default is wrong for some instrument — that is precisely the
+     * bug this replaced — and its failure mode is an order the venue refuses
+     * for a reason the log would not explain. Not sending is the cheap outcome.
+     */
+    let precision: SpotPrecision;
+    try {
+      precision = await this.getPrecision(order.symbol);
+    } catch (err) {
+      return {
+        confirmationRequired: false,
+        accepted: false,
+        orderId: null,
+        detail:
+          `could not read the order precision for ${order.symbol}, so the quantity cannot be ` +
+          `formatted to a scale the venue will accept: ` +
+          `${err instanceof Error ? err.message : String(err)}. The order was NOT sent — ` +
+          `guessing a precision is what caused a real refusal on 2026-09-20.`,
+        raw: { stdout: '', stderr: '', exitCode: -1 },
+      };
+    }
+
+    const argv = this.buildArgv(order, opts, precision);
 
     try {
       const { stdout, stderr } = await execFileAsync(this.cfg.cliPath, argv, {

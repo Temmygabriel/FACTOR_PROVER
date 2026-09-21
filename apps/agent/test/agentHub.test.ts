@@ -30,6 +30,7 @@ import {
   type BgcOrderResult,
 } from '../src/execution/agentHub.js';
 import type { OrderIntent } from '../src/execution/guard.js';
+import type { SpotPrecision } from '../src/execution/prices.js';
 
 const ORDER: OrderIntent = {
   symbol: 'RCOINUSDT',
@@ -48,7 +49,7 @@ const ORDER: OrderIntent = {
  * calling something that is no longer there.
  */
 type Internals = {
-  buildArgv(order: OrderIntent, opts: { confirm: boolean }): string[];
+  buildArgv(order: OrderIntent, opts: { confirm: boolean }, precision: SpotPrecision): string[];
   parseResult(
     stdout: string,
     stderr: string,
@@ -57,15 +58,47 @@ type Internals = {
   ): BgcOrderResult;
 };
 
+/**
+ * Instrument precisions, MEASURED from the live venue rather than invented.
+ *
+ * Read from `GET https://api.bitget.com/api/v2/spot/public/symbols?symbol=…` on
+ * 2026-09-20, which is the same public endpoint `fetchSpotPrecision` calls:
+ *
+ *   RGOOGLUSDT  quantityPrecision 4   quotePrecision 6
+ *   BTCUSDT     quantityPrecision 6   quotePrecision 8
+ *
+ * The two numbers differ, and they differ in OPPOSITE directions between the
+ * two instruments — which is the whole reason `qty` cannot be formatted with a
+ * constant. `RGOOGL` is the default here because the project's own targets are
+ * rTokens and this is a real rToken's real precision.
+ */
+const RGOOGL: SpotPrecision = {
+  symbol: 'RGOOGLUSDT',
+  quantityPrecision: 4,
+  quotePrecision: 6,
+  pricePrecision: 2,
+  minTradeUsdt: 10,
+  fetched_at: '2026-09-20T17:00:00Z',
+};
+
+const BTC: SpotPrecision = {
+  symbol: 'BTCUSDT',
+  quantityPrecision: 6,
+  quotePrecision: 8,
+  pricePrecision: 2,
+  minTradeUsdt: 1,
+  fetched_at: '2026-09-20T17:00:00Z',
+};
+
 class ArgvOnly extends BgcAgentHubClient {
-  argv(order: OrderIntent, confirm: boolean): string[] {
+  argv(order: OrderIntent, confirm: boolean, precision: SpotPrecision = RGOOGL): string[] {
     const self = this as unknown as Internals;
-    return self.buildArgv.call(this, order, { confirm });
+    return self.buildArgv.call(this, order, { confirm }, precision);
   }
 
-  parse(stdout: string, exitCode: number, confirm = false): BgcOrderResult {
+  parse(stdout: string, exitCode: number, confirm = false, stderr = ''): BgcOrderResult {
     const self = this as unknown as Internals;
-    return self.parseResult.call(this, stdout, '', exitCode, { confirm });
+    return self.parseResult.call(this, stdout, stderr, exitCode, { confirm });
   }
 }
 
@@ -157,8 +190,11 @@ describe('the flags that did not exist', () => {
 
 describe('the size parameter, whose unit depends on the side', () => {
   it('sends the notional directly for a market BUY, where qty is quote coin', () => {
+    // Formatted to the instrument's quotePrecision — 6 for RGOOGLUSDT. This
+    // read '50.00000000' while the code hardcoded `toFixed(8)`; the value was
+    // right in MAGNITUDE and wrong in SCALE, and the venue checks the scale.
     const argv = client().argv(ORDER, false);
-    expect(valueOf(argv, '--qty')).toBe('50.00000000');
+    expect(valueOf(argv, '--qty')).toBe('50.000000');
   });
 
   it('divides by the price for a market SELL, where qty is base coin', () => {
@@ -166,17 +202,24 @@ describe('the size parameter, whose unit depends on the side', () => {
     // a 50 USDT order becoming 5,000 USDT of an asset trading at 100 — and the
     // guard would have approved the 50 it was shown.
     const argv = client().argv({ ...ORDER, side: 'sell' }, false);
-    expect(valueOf(argv, '--qty')).toBe('0.50000000');
+    expect(valueOf(argv, '--qty')).toBe('0.5000');
   });
 
   it('is a decimal string, never exponent notation', () => {
     // The CLI types qty as a string, and this is where a division produces a
     // small number: 0.00001 USDT at a price of 100 is 1e-7 of the asset, and
     // String(1e-7) is the literal text "1e-7", which the CLI cannot parse as a
-    // quantity. `toFixed(8)` is what keeps it a decimal.
+    // quantity. `toFixed` is what keeps it a decimal.
+    //
+    // Eight decimals is stated explicitly here because it is the only precision
+    // at which a 1e-7 quantity is expressible at all. At RGOOGLUSDT's real
+    // precision of 4 this quantity truncates to zero and is refused — which is
+    // the subject of the truncation tests below, not of this one.
+    const eightDp: SpotPrecision = { ...RGOOGL, quantityPrecision: 8 };
     const argv = client().argv(
       { ...ORDER, side: 'sell', notional_usdt: 0.00001, entry_price: 100 },
       false,
+      eightDp,
     );
     const qty = valueOf(argv, '--qty');
     expect(qty).not.toContain('e');
@@ -189,6 +232,83 @@ describe('the size parameter, whose unit depends on the side', () => {
         /refusing to size a SELL/,
       );
     }
+  });
+});
+
+describe('the PRECISION of qty, which is per instrument and per side', () => {
+  // This whole block exists because of one real refusal. Run 35527828818 sent a
+  // fundable BTCUSDT sell on the correct side and Bitget answered:
+  //
+  //   HTTP 400 from Bitget: Parameter verification exception
+  //   size checkBDScale error value=0.00123304 checkScale=6
+  //
+  // The quantity was right and carried 8 decimals; the instrument allows 6. A
+  // `toFixed(8)` constant had been in the code with a comment asserting 8 was
+  // "the base-coin precision Bitget uses". It never was.
+
+  it("formats a SELL to the instrument's quantityPrecision, not to a constant", () => {
+    const argv = client().argv(
+      { ...ORDER, symbol: 'BTCUSDT', side: 'sell', notional_usdt: 100, entry_price: 81_000 },
+      false,
+      BTC,
+    );
+    // 100 / 81000 = 0.001234567… and BTCUSDT allows 6 decimals.
+    expect(valueOf(argv, '--qty')).toBe('0.001234');
+  });
+
+  it("formats a BUY to the instrument's quotePrecision, which is the other number", () => {
+    const argv = client().argv(
+      { ...ORDER, symbol: 'BTCUSDT', side: 'buy', notional_usdt: 50 },
+      false,
+      BTC,
+    );
+    // quotePrecision is 8 where quantityPrecision is 6, so the same instrument
+    // wants a different scale depending on which way the order goes.
+    expect(valueOf(argv, '--qty')).toBe('50.00000000');
+  });
+
+  it('rounds DOWN, so the order sent is never LARGER than the one the guard approved', () => {
+    // The notional here was approved at CHECK 3. Rounding to nearest would give
+    // 0.001235 — more base coin than the notional allows. Truncation gives
+    // 0.001234, and truncation can only ever send less.
+    const argv = client().argv(
+      { ...ORDER, symbol: 'BTCUSDT', side: 'sell', notional_usdt: 0.0012349, entry_price: 1 },
+      false,
+      BTC,
+    );
+    expect(valueOf(argv, '--qty')).toBe('0.001234');
+  });
+
+  it("refuses an order whose quantity truncates to zero at the venue's precision", () => {
+    // Silently sending this would put a zero quantity on the wire and produce a
+    // refusal the log could not explain. 1e-7 truncates to 0 at 4 decimals.
+    expect(() =>
+      client().argv(
+        { ...ORDER, side: 'sell', notional_usdt: 0.00001, entry_price: 100 },
+        false,
+        RGOOGL,
+      ),
+    ).toThrow(/truncates to 0/);
+  });
+
+  it('uses no single constant for both instruments', () => {
+    // The regression guard. If someone reinstates a fixed number of decimals,
+    // these two calls agree and this fails.
+    const rTokenSell = valueOf(
+      client().argv({ ...ORDER, side: 'sell', notional_usdt: 100, entry_price: 81_000 }, false, RGOOGL),
+      '--qty',
+    );
+    const btcSell = valueOf(
+      client().argv(
+        { ...ORDER, symbol: 'BTCUSDT', side: 'sell', notional_usdt: 100, entry_price: 81_000 },
+        false,
+        BTC,
+      ),
+      '--qty',
+    );
+    expect(rTokenSell).not.toBe(btcSell);
+    expect(rTokenSell?.split('.')[1]).toHaveLength(4);
+    expect(btcSell?.split('.')[1]).toHaveLength(6);
   });
 });
 
@@ -295,6 +415,89 @@ describe("the CLI's real envelopes, copied from run 35264648127", () => {
     const result = client().parse(JSON.stringify({ somethingNew: 'entirely' }), 0);
     expect(result.accepted).toBe(false);
     expect(result.orderId).toBeNull();
+  });
+});
+
+describe('the refusal envelope, which arrives on STDERR', () => {
+  // The third thing a real placement taught this module, on 2026-09-20.
+  //
+  // Every fixture in the block above puts its body on stdout, because that is
+  // where the two envelopes seen on 2026-09-17 came from. When orders were
+  // finally SENT for real (run 35527828818), both refusals came back with EMPTY
+  // stdout, exit 1, and the JSON envelope on stderr. `parseResult` read stdout
+  // only, so its error branch was unreachable for a real refusal and every one
+  // fell through to "the CLI returned no output".
+  //
+  // The bodies below are verbatim from `logs/paper-live.jsonl`.
+
+  const RWA_REFUSAL = JSON.stringify({
+    ok: false,
+    error: {
+      type: 'BitgetApiError',
+      code: '400',
+      category: 'unknown',
+      message: 'HTTP 400 from Bitget: papTradingService not support RWA order validation error',
+      suggestion: 'Retry later or verify endpoint parameters.',
+      retryable: false,
+      endpoint: 'POST /api/v3/trade/place-order',
+    },
+    timestamp: '2026-09-20T18:04:21.174Z',
+  });
+
+  it('reads a refusal that arrived on stderr, with stdout empty', () => {
+    const result = client().parse('', 1, false, RWA_REFUSAL);
+    expect(result.accepted).toBe(false);
+    expect(result.orderId).toBeNull();
+    // The whole point: the structured message survives. Before the fix this
+    // read "the CLI returned no output (exit 1); stderr: {…" cut off at 300
+    // characters, so the sentence naming the cause was present by luck and the
+    // one naming the endpoint never was.
+    expect(result.detail).toContain('papTradingService not support RWA');
+    expect(result.detail).toContain('the CLI refused the order');
+  });
+
+  it('reads the scale refusal too, which names the exact defect', () => {
+    const result = client().parse(
+      '',
+      1,
+      false,
+      JSON.stringify({
+        ok: false,
+        error: {
+          type: 'BitgetApiError',
+          code: '400',
+          message:
+            'HTTP 400 from Bitget: Parameter verification exception size checkBDScale error ' +
+            'value=0.00123304 checkScale=6',
+          endpoint: 'POST /api/v3/trade/place-order',
+        },
+      }),
+    );
+    expect(result.accepted).toBe(false);
+    expect(result.detail).toContain('checkBDScale');
+    expect(result.detail).toContain('checkScale=6');
+  });
+
+  it('prefers stdout when BOTH streams carry something', () => {
+    // stderr is consulted only when stdout is empty. A CLI that writes progress
+    // chatter to stderr beside a good stdout must not have that chatter read as
+    // the result — which is why this is a fallback and not a concatenation.
+    const result = client().parse(
+      JSON.stringify({
+        endpoint: 'POST /api/v3/trade/place-order',
+        data: { dryRun: true, wouldSend: { symbol: 'BTCUSDT' } },
+      }),
+      0,
+      false,
+      'warning: some chatter\n',
+    );
+    expect(result.detail).toContain('DRY RUN');
+    expect(result.detail).not.toContain('chatter');
+  });
+
+  it('still reports no output when neither stream has any', () => {
+    const result = client().parse('', 1, false, '');
+    expect(result.detail).toContain('no output on either stream');
   });
 });
 
