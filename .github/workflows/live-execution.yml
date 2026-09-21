@@ -44,6 +44,22 @@ name: Live paper execution
 # distinguishable from a rejected one.
 
 on:
+  # A DAILY RUN, because the thing being built here is a TRAIL and not a
+  # snapshot. The Agentic Trading track asks for a paper-trading log "actually
+  # run during competition period, recommended >= 2 weeks". One run on one day
+  # is an anecdote; fourteen consecutive days is a record. This workflow only
+  # became able to accumulate one when the script stopped overwriting its own
+  # output — see the append note in live-execution.ts.
+  #
+  # 06:17 UTC rather than on the hour: every scheduled job on GitHub asks for
+  # :00, and the queue at that minute is the worst it gets.
+  #
+  # Scheduled workflows are disabled after 60 days of repository inactivity.
+  # The commit step below writes to the repository on every run, which counts
+  # as activity, so this re-arms itself for as long as it keeps working.
+  schedule:
+    - cron: '17 6 * * *'
+
   workflow_dispatch:
     inputs:
       venue_check:
@@ -55,7 +71,12 @@ on:
         default: 'BTCUSDT:sell'
 
 permissions:
-  contents: read
+  # Was `read`, which was correct while the record was only uploaded as an
+  # artifact. It now has to be committed, or the trail exists nowhere durable:
+  # the free Render instance has no disk, and CI artifacts expire. This is the
+  # second workflow in the repository that writes, and the only one that places
+  # orders, which is why the commit step below is as narrow as it can be.
+  contents: write
 
 jobs:
   live:
@@ -190,6 +211,45 @@ jobs:
           name: paper-live
           path: apps/agent/logs/paper-live.jsonl
           if-no-files-found: warn
+
+      - name: Commit the record back
+        # The guard PROGRESS.md's finding 43 said was missing for the decision
+        # log, applied here BEFORE the same mistake can be made rather than
+        # after. A run that appended nothing and a run that overwrote everything
+        # look identical from the outside — both exit 0, both report success —
+        # and only one of them is a loss. So the line count is compared against
+        # what is committed, and a record that SHRANK is refused, not committed.
+        if: always()
+        run: |
+          set -euo pipefail
+          F=apps/agent/logs/paper-live.jsonl
+          if [ ! -f "$F" ]; then
+            echo "no record was written — nothing to commit"
+            exit 0
+          fi
+
+          BEFORE=$(git show "HEAD:$F" 2>/dev/null | wc -l | tr -d ' ')
+          AFTER=$(wc -l < "$F" | tr -d ' ')
+          echo "committed record: $BEFORE lines -> $AFTER lines"
+
+          if [ "$AFTER" -lt "$BEFORE" ]; then
+            echo "::error::$F SHRANK from $BEFORE to $AFTER lines. A paper-trading"
+            echo "::error::trail that gets shorter is a loss of evidence, not a"
+            echo "::error::successful run. Nothing was committed."
+            exit 1
+          fi
+
+          git add "$F"
+          if git diff --cached --quiet; then
+            echo "record is unchanged — nothing to commit"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Append the paper execution record ($AFTER lines)" \
+                     -m "Placed by .github/workflows/live-execution.yml. Every call carried --paper-trading (demo only)."
+          git push
 
       - name: Summary
         if: always()

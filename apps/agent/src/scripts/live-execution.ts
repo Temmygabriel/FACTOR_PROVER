@@ -48,7 +48,7 @@
  * be read as a factor promotion.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { loadGatePolicy } from '../config.js';
 import {
   BgcAgentHubClient,
@@ -320,13 +320,34 @@ async function main(): Promise<number> {
     '#',
   ].join('\n');
 
-  writeFileSync(
+  /*
+   * APPEND, do not overwrite.
+   *
+   * The first version of this called `writeFileSync`, which is right for a
+   * single run and silently destructive for the thing this record is actually
+   * for. The Agentic Trading track asks for a paper-trading log "actually run
+   * during competition period, recommended >= 2 weeks" — and a file that is
+   * replaced on every run can never be longer than one run, however many times
+   * it is run. Running it daily under the old code would have produced fourteen
+   * days of work and a one-day record, and nothing would have said so: each run
+   * would report "wrote 2 records" and exit 0.
+   *
+   * The header goes in only when the file is absent or empty, so it appears at
+   * the top of the trail exactly once. Appending it every time would put a
+   * second header in the middle of the records, where it reads as a change of
+   * provenance rather than a repeated one.
+   */
+  const fresh = !existsSync(outPath) || readFileSync(outPath, 'utf8').trim() === '';
+  appendFileSync(
     outPath,
-    header + '\n' + records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+    (fresh ? header + '\n' : '') + records.map((r) => JSON.stringify(r)).join('\n') + '\n',
     'utf8',
   );
 
-  process.stdout.write(`[live] wrote ${outPath} (${records.length} records)\n`);
+  process.stdout.write(
+    `[live] ${fresh ? 'wrote' : 'appended'} ${outPath} ` +
+      `(${records.length} records${fresh ? '' : ' this run'})\n`,
+  );
   return 0;
 }
 
