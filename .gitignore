@@ -72,3 +72,10 @@ factor_prover_ui_fix_exact.md
 # Submission notes are local-only: they carry strategy, gap analysis and the
 # pre-submission checklist. Not for the public repo.
 SUBMISSION.md
+
+# Local-only working documents: submission text, recording guide, the LLM
+# answer. These carry strategy and are kept off the public repo.
+DEMO_RECORDING_GUIDE.md
+LLM_ROLE.md
+PROJECT_DESCRIPTION.md
+TURN_ON_LIVE_EXECUTION.md

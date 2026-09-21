@@ -168,13 +168,47 @@ Screen: the guard module, then the test suite running.
 > in the tests instead — including the case where it refuses."
 
 ```
-Step 10 (3:50–4:10)  Why no order exists
+Step 10 (3:50–4:30)  The order that really was placed
 ```
-**Note: this replaces §16's "paper order executing".** Screen: the guard's refusal path.
+**This replaces §16's "paper order executing" — and it changed again on 2026-09-21, when the
+execution leg placed its first real order.** Screen: `apps/agent/logs/paper-live.jsonl`.
 
-> "There is no order to show you. No hypothesis cleared the gate, so the guard was never
-> asked to send one. That's not a gap in the demo — it's the safety property working. This
-> system cannot reach a market unless a preregistered statistical test says it may."
+> "Here is the execution leg. Every line in this file was captured live — placed by the same
+> Execution Guard and the same Agent Hub client the agent runs, against Bitget's demo
+> environment."
+
+Show the accepted row. Read it off the screen:
+
+> `kind=venue_check  BTCUSDT sell  100 USDT`
+> `exit_code=0  accepted=true  order_id=1485970832289546240`
+
+> "A hundred USDT sell of BTC, accepted, order id returned by the venue. That's the first
+> order this project ever got through."
+
+Then show the row above it — the promoted order, refused:
+
+> `kind=live_order  RGOOGLUSDT buy  refused at CHECK_5`
+> `HTTP 400 from Bitget: papTradingService not support RWA order validation error`
+
+> "And this is our own promoted hypothesis, refused. Every instrument we trade is an rToken —
+> a tokenised share — and Bitget's demo venue does not validate RWA orders. It's not a bug in
+> our code: the same guard, the same client, the same signing put the BTC order through in the
+> same run. Only the symbol differs."
+
+Then the part that matters most — say it plainly, do not bury it:
+
+> "We didn't assume that. We tested the way out. Maybe only market orders were blocked, so we
+> tried a limit order. Same refusal. Limit buy, limit sell, market — all three. Meanwhile a
+> BTC limit order was accepted on the same run. So the limitation belongs to the instrument,
+> not to how we send the order, and there is no workaround on our side. We're telling you
+> that rather than showing you a different pair and hoping you don't ask."
+
+> "Nothing was promoted this session, so no order followed from a promotion. The order you
+> just saw is the execution path being proved on purpose, on an instrument the venue accepts."
+
+**Honesty note for the camera:** do not say "our agent traded" and do not say "execution
+works". Say exactly what happened: the plumbing is proven, the promoted instrument is refused
+by the venue, and that is disclosed here.
 
 ```
 Step 11 (4:10–4:40)  The hash chain
