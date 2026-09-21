@@ -2,7 +2,8 @@
 
 **Hackathon:** Bitget AI × Crypto Hackathon — Genesis Season 2  
 **Track:** Agentic Trading — Factor mining agent  
-**Submission deadline:** September 21, 2026  
+**Submission deadline:** September 27, 2026 (UTC+8) — **corrected 2026-09-21**  
+**Submission portal:** https://forms.gle/GyWZCMCPocgJdJon6 (Google Form)  
 **Builder:** Solo developer, Lagos, Nigeria  
 **Coding assistant:** DeepSeek Flash V4 inside Claude Code  
 **Deployment target:** Vercel (frontend) + Railway or Render free tier (backend)  
@@ -733,10 +734,27 @@ Demo mode is clearly labeled in the UI: **"REPLAY — Session S-2026-09-10-001"*
   null-result framing if none pass the gate)
 - Write submission description
 
-### Day 12 (Sep 21): Submission
+### Day 12 (Sep 21 → **revised: submission window runs to Sep 27**): Submission
 - Final check: `BITGET_PAPER_TRADING=true` confirmed in production env
 - Submit before deadline with: GitHub repo, demo video, live URL,
   submission description
+
+> **Schedule correction, 2026-09-21.** This plan was written against a
+> September 21 deadline. The official handbook states **September 27, 2026
+> (UTC+8)** — the string "9/21" does not appear anywhere in it. The days above
+> were laid out for a 12-day run, so the extra six days are best spent on the
+> one requirement this project is thinnest on: the Agentic Trading track asks
+> for a paper-trading log "actually run during competition period, recommended
+> ≥2 weeks", and a longer live record is the honest way to close that gap.
+>
+> Source: <https://bitget-ai.gitbook.io/bitgetai_hackathons2/base-camp-hackathon-s2-en>
+>
+> **The handbook contradicts itself elsewhere and you should verify before
+> relying on it.** It gives voting as both 9/22–9/28 and 9/28–10/7, judge review
+> as both 9/22–9/28 and 9/22–10/7, and mentions "submission on 9/23" once in the
+> Best Spread FAQ against 9/27 everywhere else. **Treat 9/23 as the safe
+> internal target** and 9/27 as the stated one — that way a clarification from
+> the organisers can only move the date later, never past you.
 
 ---
 

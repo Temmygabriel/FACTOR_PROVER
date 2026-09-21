@@ -2,9 +2,13 @@
  * Bitget Agent Hub client.
  *
  * ============================================================================
- * STATUS: the command vector is VERIFIED against the real CLI, and orders have
- * now been SENT and ANSWERED by the demo venue. No order has ever been
- * ACCEPTED, so no fill has been observed.
+ * STATUS: the command vector is VERIFIED against the real CLI, and an order has
+ * now been ACCEPTED by the demo venue — BTCUSDT sell, order id
+ * 1485970832289546240, run 35627286184. "Accepted" is as far as the evidence
+ * goes: the venue returned an order id, and no separate order-status read has
+ * confirmed the order traded. The project's OWN promoted order still cannot
+ * fill, because every instrument it trades is an rToken and the demo venue
+ * refuses RWA instruments. Both rows are in logs/paper-live.jsonl.
  * ============================================================================
  *
  * WHAT "VERIFIED" MEANS HERE, AND HOW. On 2026-09-17 the CLI was installed from
@@ -259,10 +263,33 @@ export interface HubCapability {
  * boolean flipped to true by that run would report this integration as verified
  * on the strength of two failures — which is exactly how a project comes to
  * claim an execution leg it has never once seen work.
+ *
+ * THE ORDER HAS NOW BEEN ACCEPTED, and the distinction that keeps this honest
+ * is WHICH order. Run 35627286184 placed two again:
+ *
+ *   RGOOGLUSDT buy  — refused at CHECK 5. "papTradingService not support RWA
+ *                     order validation error". This is the project's own
+ *                     promoted hypothesis (E-0006 / H-0006) and it is refused
+ *                     for a structural reason: every instrument Factor Prover
+ *                     trades is an rToken, and the demo venue's order validation
+ *                     rejects RWA instruments outright. No amount of fixing on
+ *                     this side changes that.
+ *
+ *   BTCUSDT sell    — ACCEPTED. exit 0, order id 1485970832289546240 returned
+ *                     by the venue, signed and sent through the same Execution
+ *                     Guard and the same CLI argv builder that the promoted
+ *                     order used. The precision fix is what unblocked it: the
+ *                     previous run was refused on decimal places.
+ *
+ * So 'accepted' here certifies the PLUMBING — that this code path can build,
+ * sign and place an order the exchange takes — and it does not certify that the
+ * promoted factor's own order fills. That order cannot fill in demo, for a
+ * reason that lives at the venue. The record at logs/paper-live.jsonl keeps both
+ * rows, so the read is one file away rather than one inference away.
  */
 type PlacementEvidence = 'none' | 'refusals_only' | 'accepted';
 
-const LIVE_PLACEMENT_EVIDENCE: PlacementEvidence = 'refusals_only';
+const LIVE_PLACEMENT_EVIDENCE: PlacementEvidence = 'accepted';
 
 /**
  * Probe whether paper execution is actually possible here.
@@ -329,11 +356,13 @@ export function describeCapability(
   const verified =
     'The request vector IS verified against the real CLI (@bitget-ai/bitget-agent-cli 3.0.0, ' +
     'bitget-agent-sdk 3.1.0): every flag this module passes was accepted in dry-run, which the ' +
-    'CLI answers before authentication. Two real orders have since been placed in the demo ' +
-    'environment and answered by the venue (run 35527828818; verbatim bodies committed at ' +
-    'logs/paper-live.jsonl), so the response envelope and the refusal path are verified too. ' +
-    'What is NOT verified is an ACCEPTED placement: no fill has ever been observed, so where ' +
-    'the venue puts an order id is still inferred rather than known.';
+    'CLI answers before authentication. Orders have since been placed in the demo environment ' +
+    'and answered by the venue, so the response envelope, the refusal path and the ACCEPTANCE ' +
+    'path are all verified (runs 35527828818 and 35627286184; verbatim bodies committed at ' +
+    'logs/paper-live.jsonl). The accepted placement was a BTCUSDT sell, order id ' +
+    '1485970832289546240 — not the promoted factor order, which the demo venue refuses as an ' +
+    'RWA instrument. What is still NOT verified is a FILL: acceptance returns an order id, and ' +
+    'no separate order-status read has confirmed that the order traded.';
 
   return {
     available,

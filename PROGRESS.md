@@ -1,7 +1,8 @@
 # Factor Prover — Build Progress
 
 **Hackathon:** Bitget AI × Crypto Hackathon — Genesis Season 2, Agentic Trading track
-**Deadline:** 2026-09-21
+**Deadline:** 2026-09-27 (UTC+8) — **corrected 2026-09-21; this file said 09-21 and was wrong**
+**Submission portal:** https://forms.gle/GyWZCMCPocgJdJon6
 **Repo:** https://github.com/Temmygabriel/FACTOR_PROVER (public)
 **Specs:** `factor_prover_build_spec.md`, `factor_prover_design_spec.md`
 
@@ -996,8 +997,16 @@ measurement. `resolveOnPath` now walks PATH the way a shell does.
 **What is verified now, and what is still not.** The **request** is verified: every flag the
 module passes was accepted in the run, and the dry-run probes answered with a full `wouldSend`
 preview while `get_auth_status` reported `authorized: false` and no credentials existed
-anywhere in the job. The **placement** is not, and `unverified` stays `true` for that reason
-alone — stated narrowly rather than as a blanket disclaimer over the parts that were checked.
+anywhere in the job. The **placement** was not yet verified at that point, and `unverified` was
+`true` for that reason alone — stated narrowly rather than as a blanket disclaimer over the
+parts that were checked.
+
+**That last half has since been settled, and not the way the disclaimer expected.**
+See *"The live execution, and the order that was finally accepted"* below (2026-09-21). The
+short version: the placement path is now verified by an accepted order, `unverified` is
+`false`, and the promoted factor's own order still cannot fill — because every instrument this
+project trades is an rToken and the demo venue refuses RWA instruments outright. The claim
+narrowed to "acceptance is evidenced; a fill is not" rather than widening to "execution works".
 
 One consequence worth recording because it is easy to get backwards: `--confirm` is **not**
 the CLI's two-phase contract. Discovery reports `requiresConfirm: false` for `place`, and the
@@ -1022,6 +1031,102 @@ order.
 documents asserting results that did not exist. This is code asserting an interface that was
 never contacted. Both are what happens when a plausible description goes untested long enough
 to be repeated — and in both cases the thing that found it was running it, not reading it.
+
+---
+
+## The live execution, and the order that was finally accepted (2026-09-20 → 2026-09-21)
+
+**What was wrong with the project before this.** `apps/agent/logs/paper.jsonl` says it in its
+own header: *"RECONSTRUCTED, NOT CAPTURED LIVE … No order here was sent anywhere."* The
+execution leg had never placed an order. Every claim about it rested on a command vector that
+had been read off documentation, corrected once against `--help`, and never once put in front
+of the venue.
+
+**The workflow that fixed that.** `.github/workflows/live-execution.yml` + `src/scripts/
+live-execution.ts`. The script runs the **production** `ExecutionGuard` and the **production**
+`BgcAgentHubClient` — not a copy of them — against demo credentials, and records the raw
+stdout, stderr and exit code of every CLI call to `apps/agent/logs/paper-live.jsonl`. Two
+orders per run: the committed promotion (E-0006 / H-0006), and one order on an instrument of
+the caller's choosing, which exists to answer a question the promoted order cannot.
+
+**Finding 44 — the refusal envelope arrives on STDERR, not stdout.** Both refusals in run
+35527828818 came back with `stdout` empty and exit 1. `parseResult` read stdout only, so its
+error branch was **unreachable for a real refusal** — every one fell through to "the CLI
+returned no output" and kept a 300-character suffix of the body instead of the structured
+error. The unit tests had passed for months because their fixtures put the error on stdout,
+which is where a reasonable person would put it. `stderr` is now consulted when `stdout` is
+empty — a fallback, not a concatenation, so progress chatter cannot be mistaken for a result.
+
+**Finding 45 — `qty`'s precision is per-instrument AND per-side.** The venue refused a BTCUSDT
+sell with:
+
+```
+Parameter verification exception size checkBDScale error value=0.00123304 checkScale=6
+```
+
+A fundable order, on the correct side, killed by decimal places. `toFixed(8)` had been
+hardcoded with a comment asserting 8 was "the base-coin precision Bitget uses". The public
+instrument endpoint says otherwise:
+
+| | `quantityPrecision` | `quotePrecision` |
+|---|---|---|
+| `BTCUSDT` | 6 | 8 |
+| `RGOOGLUSDT` | 4 | 6 |
+
+So the constant was right for a BTCUSDT **buy** by luck, wrong for a BTCUSDT **sell**, and
+wrong for an RGOOGLUSDT buy too — the rToken simply never got far enough to say so, being
+refused as RWA first. **No constant could have been chosen correctly**, which is why
+`fetchSpotPrecision` now reads the number from the instrument and refuses the order rather
+than guessing when it cannot. Truncation is toward zero, so the quantity sent is never larger
+than the one CHECK 3 approved, and anything that truncates to zero is refused before it
+reaches the wire.
+
+**Finding 46 — the demo account's USDT is not where the trading API looks.** The first
+BTCUSDT buy failed with `Insufficient balance`. The demo account holds **5,000 USDT in
+`fundingAssets`** and **nothing in `assets`**, which is the trading balance the order
+endpoint spends. The obvious fix — move it — does not exist: `transfer_funds` returns **HTTP
+404** in the demo environment (`POST /api/v3/account/transfer` is not routed there). This is
+why every order in the record is a **sell** of an instrument the account already holds: a sell
+is fundable from the spot wallet the demo account does have. It is a venue limitation, not a
+bug in this repo, and it is recorded rather than worked around.
+
+**Finding 47 — the promoted order can never fill in demo, and that is structural.** Every
+instrument this project trades is an rToken, and the demo venue's order validation refuses
+them:
+
+```
+HTTP 400 from Bitget: papTradingService not support RWA order validation error
+```
+
+There is no fix on this side of the wire. `RTOKEN_SYMBOLS` is the project's entire universe
+(finding: rTokens are SPOT instruments), so "choose a different instrument" would mean
+choosing different factors. **This is disclosed, not hidden** — the submission says the
+promoted order is refused by the demo venue and why, and it is the honest reason a reviewer
+will not see a filled rToken trade.
+
+**The order that WAS accepted.** Run
+[35627286184](https://github.com/Temmygabriel/FACTOR_PROVER/actions/runs/35627286184),
+2026-09-21T16:42:55Z:
+
+```
+kind=venue_check  BTCUSDT sell  100 USDT
+exit_code=0   accepted=true   order_id=1485970832289546240
+```
+
+This is the first order this codebase has ever gotten accepted. It went through the same
+`ExecutionGuard` and the same argv builder as the promoted order — the only difference is the
+instrument — which is what makes it evidence about the **plumbing** rather than about the
+strategy. `LIVE_PLACEMENT_EVIDENCE` moved from `refusals_only` to `accepted`, and its own
+comment records why that is not the same as claiming the project trades.
+
+> One more deviation worth naming: CHECK 5 is a two-phase confirm in this project's own
+> design, and the accepted order came back **single-phase** — the CLI placed it on the first
+> call without requesting confirmation. That is recorded in the log entry as a deviation
+> rather than as a normal pass.
+
+**What is still NOT verified: a fill.** Acceptance returns an order id; an order id is not a
+trade. No separate order-status read has confirmed the order matched. The banner says exactly
+that, and a test asserts it says it.
 
 ---
 
@@ -1440,3 +1545,39 @@ to be repeated — and in both cases the thing that found it was running it, not
   committed one unless that is asked for explicitly. Left unbuilt here deliberately: it edits
   the one workflow the submission depends on, three days before the deadline, and the restore
   is the fix. It is the first thing to do with the next free hour.
+
+- **2026-09-21** — **The execution leg has now placed an order, and the venue accepted it.**
+  Run [35627286184](https://github.com/Temmygabriel/FACTOR_PROVER/actions/runs/35627286184)
+  sent a BTCUSDT sell through the production `ExecutionGuard` and the production
+  `BgcAgentHubClient`; the venue returned `accepted: true`, `order_id
+  1485970832289546240`, exit 0. First accepted order in the project's life. Record committed
+  at `apps/agent/logs/paper-live.jsonl` (captured live, unlike `paper.jsonl`, which says in
+  its own header that it was reconstructed).
+
+  Findings 44–47 recorded above: the refusal envelope arrives on **stderr** (44); `qty`'s
+  precision is **per-instrument and per-side**, so no hardcoded constant could ever have been
+  right (45); the demo account's USDT sits in `fundingAssets` where the trading API cannot
+  reach it, and `transfer_funds` is 404 in demo (46); and **the promoted order can never fill
+  in demo** because every instrument this project trades is an rToken and the demo venue
+  refuses RWA instruments outright (47). The last one is disclosed in the submission rather
+  than worked around — there is nothing to work around.
+
+  `LIVE_PLACEMENT_EVIDENCE` moved `refusals_only` → `accepted`, and the banner string and its
+  test were rewritten in the same commit rather than left to drift. The claim is deliberately
+  **narrower than "execution works"**: acceptance is evidenced, a **fill** is not — an order id
+  is not a trade, and no order-status read has confirmed one. The promoted order's refusal is
+  still named in the banner, because that is the sentence most likely to be quietly dropped
+  now that something else succeeds. The test that used to assert `unverified === true` now
+  asserts `false` **and** asserts the retracted sentence is absent, so it cannot come back by
+  accident.
+
+- **2026-09-21** — **The deadline in this file was wrong.** It said `2026-09-21`. The official
+  handbook says **September 27, 2026 (UTC+8)**; the string "9/21" appears nowhere in it.
+  Corrected here and in `factor_prover_build_spec.md`, with the submission portal recorded in
+  both: <https://forms.gle/GyWZCMCPocgJdJon6>. The handbook contradicts itself on the
+  surrounding dates (voting as both 9/22–9/28 and 9/28–10/7; judge review as both 9/22–9/28
+  and 9/22–10/7; one stray "submission on 9/23" in the Best Spread FAQ), so **9/23 is the safe
+  internal target and 9/27 the stated one**. The extra six days are best spent on the
+  requirement this project is thinnest on — the Agentic Trading track asks for a paper-trading
+  log run during the competition, recommended ≥2 weeks, and a longer live record is the honest
+  way to close that gap.

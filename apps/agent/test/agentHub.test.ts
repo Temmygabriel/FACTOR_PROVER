@@ -545,14 +545,33 @@ describe('the capability banner', () => {
     expect(cap.detail).toContain('CLI found at');
   });
 
-  it('separates the verified request from the unverified placement', () => {
+  it('separates the verified request from the still-unverified FILL', () => {
     // The banner must not carry a blanket disclaimer over the parts that were
-    // checked, nor claim a placement that never happened. Both halves are
+    // checked, nor claim more than the evidence supports. Both halves are
     // asserted, because either one alone would let the other drift.
+    //
+    // WHAT CHANGED, AND WHY THIS TEST HAD TO. It used to assert
+    // `unverified === true` with the reason "no accepted placement has ever
+    // been observed". On 2026-09-21 that stopped being true: run 35627286184
+    // placed a BTCUSDT sell and the venue returned order id
+    // 1485970832289546240. Leaving the assertion alone would have been the
+    // mirror of the original bug — a banner confidently reporting a state the
+    // evidence had moved past.
+    //
+    // The claim narrows rather than disappears. Acceptance is evidenced; a FILL
+    // is not, because an order id is not a trade. And the promoted order is
+    // still refused as an RWA instrument, which the banner must keep saying
+    // even though a different instrument succeeded — that is the sentence most
+    // at risk of being quietly dropped now that something works.
     const cap = describeCapability(loadAgentHubConfig({}), {});
     expect(cap.detail).toContain('IS verified');
     expect(cap.detail).toContain('3.0.0');
     expect(cap.detail).toContain('NOT verified');
-    expect(cap.unverified).toBe(true);
+    expect(cap.detail).toContain('FILL');
+    expect(cap.detail).toContain('1485970832289546240');
+    expect(cap.detail).toContain('RWA');
+    // The retracted claim, asserted absent so it cannot come back by accident.
+    expect(cap.detail).not.toContain('No order has ever been');
+    expect(cap.unverified).toBe(false);
   });
 });
