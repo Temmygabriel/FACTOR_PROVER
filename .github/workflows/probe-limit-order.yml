@@ -1,0 +1,188 @@
+name: Probe limit orders on rTokens
+
+# ============================================================================
+# ONE QUESTION: does Bitget's demo venue refuse rTokens for LIMIT orders too,
+# or only for MARKET orders?
+# ============================================================================
+#
+# WHY THIS EXISTS. Every order this project has ever sent has been
+# `orderType=market`, and every rToken one has come back:
+#
+#   HTTP 400 from Bitget: papTradingService not support RWA order validation
+#
+# That single error is what currently stands between the Factor Prover and a
+# promoted factor that actually fills: the project's whole instrument universe
+# is rTokens. If the RWA validation is a property of *market* order handling
+# rather than of the instrument, a limit order would trade and the factor would
+# fill end to end.
+#
+# WHY THIS DOES NOT TOUCH THE PRODUCTION CODE PATH. It calls `bgc` directly
+# instead of going through `ExecutionGuard` and `BgcAgentHubClient`. The
+# question is about the VENUE, so routing it through this project's own client
+# would add two variables and settle nothing. If the answer is "limit orders are
+# accepted", the code change comes after, deliberately, against a known result.
+#
+# HOW THE ANSWER IS READ. The demo trading account holds no USDT and none of
+# these rTokens, so an rToken order will fail on SOMETHING no matter what. The
+# error message is what discriminates, and it discriminates cleanly:
+#
+#   "not support RWA"     -> the RWA check ran. Limit orders are refused too.
+#   "Insufficient balance"-> the RWA check did NOT run. It got as far as sizing
+#                            up the order, which means limit orders on rTokens
+#                            may well be acceptable.
+#   "checkBDScale"        -> likewise past validation; a precision problem.
+#
+# So a failure here can still be a positive result, and the raw body is printed
+# unparsed so the reading is not done by this file's summary logic.
+#
+# CONTROLS. `BTCUSDT` is the pair whose market SELL the venue already ACCEPTED
+# (run 35627286184, order id 1485970832289546240). A limit order on it proves
+# limit orders work at all, which separates "limit is broken" from "rToken is
+# refused". Without that control a limit refusal on the rToken would be
+# ambiguous in exactly the way this probe is meant to remove.
+#
+# SAFETY. Every call carries `--paper-trading` — demo funds, no real money, and
+# no flag combination in this file reaches a funded account. The limit prices
+# are set FAR from market (a sell priced above the market and a buy priced
+# below it) so that nothing fills even in demo. Secrets are read from the
+# environment by the CLI and are never echoed: the only thing reported about
+# them is presence, by name.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rtoken:
+        description: 'The rToken to test, e.g. RGOOGLUSDT'
+        required: false
+        default: 'RGOOGLUSDT'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Market vs limit, rToken vs control
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Confirm which credentials arrived
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          for v in BITGET_API_KEY BITGET_SECRET_KEY BITGET_PASSPHRASE; do
+            val="${!v:-}"
+            if [ -z "$val" ]; then
+              echo "$v: EMPTY (not set on this repository)"
+            else
+              echo "$v: present"
+            fi
+          done
+
+      - name: Install the Agent Hub CLI outside the repository
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -3
+          echo "$TOOLCHAIN/node_modules/.bin" >> "$GITHUB_PATH"
+          node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
+
+      - name: The contract for place, including whether limit is even allowed
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+        run: |
+          set +e
+          echo "===== discover --tool order --action place ====="
+          bgc discover --tool order --action place 2>&1
+          echo "--- exit: $? ---"
+          echo
+          echo "===== discover --search orderType ====="
+          bgc discover --search orderType 2>&1
+          echo "--- exit: $? ---"
+          echo
+          echo "===== discover --search price ====="
+          bgc discover --search price 2>&1
+          echo "--- exit: $? ---"
+          exit 0
+
+      - name: Attempt every order and print the raw body
+        # One step rather than six, so the whole comparison appears in one
+        # contiguous block in the log and can be read top to bottom. Each probe
+        # is labelled, run with `set +e` so a refusal does not stop the rest,
+        # and its exit code is printed next to its body.
+        env:
+          BITGET_API_KEY: ${{ secrets.BITGET_API_KEY }}
+          BITGET_SECRET_KEY: ${{ secrets.BITGET_SECRET_KEY }}
+          BITGET_PASSPHRASE: ${{ secrets.BITGET_PASSPHRASE }}
+          RTOKEN: ${{ inputs.rtoken }}
+        run: |
+          set +e
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "###################################################################"
+            echo "## $label"
+            echo "## \$ $*"
+            echo "###################################################################"
+            "$@" 2>&1
+            echo "--- exit code: $? ---"
+          }
+
+          # BASELINE: the refusal this project already has on record. If this
+          # does not reproduce, the comparison below means nothing.
+          probe "A. rToken MARKET buy (the known refusal)" \
+            bgc order --action place --paper-trading \
+              --category SPOT --symbol "$RTOKEN" --side buy --orderType market --qty 100
+
+          # THE QUESTION.
+          probe "B. rToken LIMIT buy — priced FAR BELOW market so it cannot fill" \
+            bgc order --action place --paper-trading \
+              --category SPOT --symbol "$RTOKEN" --side buy --orderType limit --qty 100 --price 1
+
+          probe "C. rToken LIMIT sell — priced FAR ABOVE market so it cannot fill" \
+            bgc order --action place --paper-trading \
+              --category SPOT --symbol "$RTOKEN" --side sell --orderType limit --qty 1 --price 999999
+
+          # CONTROL: limit orders on the pair the venue already accepted.
+          probe "D. CONTROL — BTCUSDT LIMIT sell, priced far above market" \
+            bgc order --action place --paper-trading \
+              --category SPOT --symbol BTCUSDT --side sell --orderType limit --qty 0.001 --price 200000
+
+          probe "E. CONTROL — BTCUSDT MARKET sell (the order that was ACCEPTED)" \
+            bgc order --action place --paper-trading \
+              --category SPOT --symbol BTCUSDT --side sell --orderType market --qty 0.001
+
+          exit 0
+
+      - name: Read the result
+        if: always()
+        run: |
+          {
+            echo "### Limit vs market on rTokens"
+            echo
+            echo "Read the bodies above, not this summary."
+            echo
+            echo "| result | reading |"
+            echo "|---|---|"
+            echo "| \`not support RWA\` | the RWA check ran — limit orders are refused too |"
+            echo "| \`Insufficient balance\` | the RWA check did **not** run — limit got past validation |"
+            echo "| \`checkBDScale\` | likewise past validation; a precision problem only |"
+            echo "| accepted / orderId | **limit orders on rTokens work — the factor can trade** |"
+            echo
+            echo "Probe D is the control: if D is also refused, limit orders are broken"
+            echo "generally and probe B tells us nothing about rTokens."
+          } >> "$GITHUB_STEP_SUMMARY"

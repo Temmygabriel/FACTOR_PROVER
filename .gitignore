@@ -68,3 +68,7 @@ __pycache__/
 # so a `git add .` cannot publish them by accident.
 factor_prover_ui_redesign_brief.md
 factor_prover_ui_fix_exact.md
+
+# Submission notes are local-only: they carry strategy, gap analysis and the
+# pre-submission checklist. Not for the public repo.
+SUBMISSION.md
