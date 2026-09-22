@@ -3,11 +3,13 @@
 /**
  * Live loop view — the default route, and the screen the demo opens on.
  *
- * Reading order is fixed: the session line, then the provenance, then the
- * hypothesis and its stamp, then the state of the loop, then the record. The
- * stamp is the largest element on the page in both outcomes, and the session
- * counter line ("43 attempted · 1 promoted · 42 killed") is the second thing the
- * eye lands on, per spec §6 Screen 1.
+ * READING ORDER is now the reconfiguration brief's §38: what this is, how it
+ * works, the session's own numbers, a real result from the record, why the
+ * record can be trusted, and only then the live instrument — session line,
+ * provenance, hypothesis and stamp, loop state, record. The stamp is still the
+ * largest element in the running view in both outcomes. What changed is that the
+ * page no longer opens on a raw session id as its `<h1>`: a first-time reader
+ * now meets the product before the machinery.
  *
  * DEGRADATION. Three reads arrive independently — status, the log, and the SSE
  * stream — and any of them can be missing on its own:
@@ -19,6 +21,12 @@
  * has, and the panel that has nothing says which endpoint is missing and what
  * that means. There is no full-page spinner and no blank page, because a blank
  * page cannot tell a reader whether the loop is idle or the backend is asleep.
+ *
+ * The new sections above obey the same rule, and it is worth stating how: the
+ * hero, the pipeline and the trust columns are static copy and need no backend
+ * at all, and the real-result card omits itself rather than inventing numbers if
+ * its read fails. So a cold backend costs a reader the live panels and nothing
+ * above them.
  */
 
 import { useMemo, useState } from 'react';
@@ -29,10 +37,17 @@ import { DecisionLog } from '@/components/DecisionLog';
 import { EmptyBench } from '@/components/EmptyBench';
 import { HypothesisPanel } from '@/components/HypothesisPanel';
 import { LiveFeed } from '@/components/LiveFeed';
+import { OrientationStrip } from '@/components/OrientationStrip';
 import { Panel } from '@/components/Panel';
+import { ProcessPipeline } from '@/components/ProcessPipeline';
+import type { StageState } from '@/components/ProcessStep';
+import { ProductHero } from '@/components/ProductHero';
 import { ProvenancePanel } from '@/components/ProvenancePanel';
+import { RealResultCard } from '@/components/RealResultCard';
 import { SessionStatsPanel } from '@/components/SessionStatsPanel';
 import { StatusChip } from '@/components/StatusChip';
+import { TrustSection } from '@/components/TrustSection';
+import { sessionCounts } from '@/lib/copy';
 import { fmtInt } from '@/lib/format';
 import { canStartSession } from '@/lib/phase';
 import {
@@ -44,8 +59,9 @@ import {
   postResume,
 } from '@/lib/api';
 import { deriveCurrent, useStream } from '@/lib/stream';
-import type { StatusResponse } from '@/lib/types';
+import type { DecisionRow, SessionPhase, StatusResponse } from '@/lib/types';
 import { useNow, useResource } from '@/lib/useResource';
+import { verdictForDecision } from '@/lib/verdict';
 
 /** Recent decisions shown on this view. The full record lives on /log. */
 const RECENT_LIMIT = 12;
@@ -70,6 +86,68 @@ function killedSegment(stats: StatusResponse['stats']): string {
   return `${killed} (${fmtInt(stats.hypotheses_schema_rejected)} of them by the schema wall, before any backtest)`;
 }
 
+/**
+ * What the pipeline diagram is allowed to say about the loop right now.
+ *
+ * THE HARD PART IS NOT THE STATES, IT IS THE RESTRAINT. A diagram with five
+ * nodes and three shades is very easy to make assert something that has not
+ * happened — a node lit because a request went out, or because a previous
+ * session had got that far. So every state below is earned from a value this
+ * page already holds, and nothing is inferred from the mere fact that the loop
+ * is switched on.
+ *
+ *  - DATA is the one node that is ALWAYS complete, and that is not a shortcut.
+ *    The dataset is frozen and hashed and ships with the service; there is no
+ *    moment at which it is not ready, so a diagram that showed it pending would
+ *    be describing a state this system cannot be in.
+ *  - Nothing else is lit unless the loop is actually running. An idle loop shows
+ *    an idle diagram rather than the last session's final state, because this
+ *    page cannot tell those apart from the counters alone and guessing would put
+ *    a stale verdict on the screen.
+ *  - IDEA is current only while the loop is running and has not yet produced a
+ *    hypothesis to test. TEST is current once one is in flight.
+ *  - All five are complete only when a verdict for the in-flight hypothesis has
+ *    actually arrived, which is the single instant at which every stage has
+ *    demonstrably happened.
+ *
+ * GATE and VERDICT are lit together rather than in sequence. They are one
+ * atomic event in this system — `gate.ts` applies the policy and returns the
+ * decision — and a diagram that animated between them would be depicting a
+ * handoff that does not exist in the code.
+ */
+function pipelineStates(
+  phase: SessionPhase | null,
+  hypothesisInFlight: boolean,
+  verdictArrived: boolean,
+): StageState[] {
+  if (phase !== 'running') {
+    return ['idle', 'done', 'idle', 'idle', 'idle'];
+  }
+  if (verdictArrived) {
+    return ['done', 'done', 'done', 'done', 'done'];
+  }
+  if (hypothesisInFlight) {
+    return ['done', 'done', 'current', 'idle', 'idle'];
+  }
+  return ['current', 'done', 'idle', 'idle', 'idle'];
+}
+
+/**
+ * The VERDICT node's tone, or null when there is no verdict to tint it with.
+ *
+ * A circuit break takes null rather than a colour, for the reason `lib/verdict.ts`
+ * gives at length: a circuit break is a halt of the loop, not a judgement on a
+ * factor, and tinting the node red would tell a reader a hypothesis had been
+ * killed when what happened is that the loop stopped.
+ */
+function pipelineTone(entry: DecisionRow | null): 'promoted' | 'killed' | null {
+  if (!entry) return null;
+  const verdict = verdictForDecision(entry);
+  if (verdict === 'PROMOTED') return 'promoted';
+  if (verdict === 'KILLED' || verdict === 'AUTO-KILLED') return 'killed';
+  return null;
+}
+
 export default function LoopPage() {
   const stream = useStream();
   const status = useResource(getStatus, {
@@ -91,6 +169,24 @@ export default function LoopPage() {
   const statusData = status.data;
   const phase = statusData?.phase ?? null;
   const running = phase === 'running' && current.hypothesis !== null && current.entry === null;
+
+  /*
+   * The pipeline's inputs, kept as two named facts rather than inline booleans.
+   * "A hypothesis is in flight" and "a verdict has arrived" are the two things
+   * the diagram is allowed to react to, and naming them is what makes the rules
+   * in `pipelineStates` checkable against the values they were written for.
+   */
+  const hypothesisInFlight = current.hypothesis !== null && current.entry === null;
+  const verdictArrived = current.entry !== null;
+
+  /*
+   * The orientation strip's counts, which this page now renders itself. It reads
+   * the SAME poll the header and the panels below use, so the strip and the
+   * session line cannot disagree about the same instant — which is the property
+   * `NavBar` was protecting when it passed these down, preserved here by
+   * sourcing them from one status read rather than opening a second.
+   */
+  const counts = sessionCounts(statusData?.stats ?? null);
 
   /*
    * THIS SESSION has attempted nothing, so there is no verdict from it to render.
@@ -217,15 +313,54 @@ export default function LoopPage() {
   return (
     <div className="flex flex-col gap-6">
       {/*
-        The session header. Before the first reading arrives it still renders its
-        shell, so the page has a shape while the backend wakes instead of
-        appearing to be nothing.
+        What this is, then how it works. Both are static copy and neither touches
+        the network, so on a cold backend they are the two things a reader still
+        gets — which is the point of putting them first.
       */}
-      <section className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3 border-b border-rule pb-4">
+      <ProductHero />
+
+      {/* `#how-it-works` is the nav item's destination, from every route. */}
+      <div id="how-it-works" className="scroll-mt-16">
+        <ProcessPipeline
+          states={pipelineStates(phase, hypothesisInFlight, verdictArrived)}
+          verdict={pipelineTone(current.entry)}
+        />
+      </div>
+
+      {/*
+        The session counters, moved below the explanation (brief §7.2). On the
+        run view this page owns the strip; `NavBar` renders it only on the other
+        two routes, so it appears exactly once wherever a reader is standing.
+      */}
+      <OrientationStrip counts={counts} />
+
+      <RealResultCard />
+
+      <TrustSection />
+
+      {/*
+        The live instrument. Everything below this line is the screen the demo
+        opens on and behaves as it did before the reconfiguration.
+
+        `id="live-test"` is the hero's primary CTA target, and `scroll-mt-16`
+        clears the 48px sticky bar so the heading is not hidden underneath it
+        when the anchor lands.
+      */}
+      <section
+        id="live-test"
+        className="flex scroll-mt-16 flex-wrap items-end justify-between gap-x-8 gap-y-3 border-b border-rule pb-4"
+      >
         <div>
-          <h1 className="text-heading font-semibold text-ink">
+          {/*
+            An `<h2>`, not the `<h1>` it used to be. The page's one `<h1>` is now
+            the hero headline — a page with two top-level headings has no
+            top-level heading, and a screen reader's outline would announce the
+            session id as a peer of the product statement rather than as a
+            section under it.
+          */}
+          <h2 className="text-heading font-semibold text-ink">
             {statusData ? `Session ${statusData.provenance.session_id}` : 'Session'}
-          </h1>
+          </h2>
           <p className="mt-1 font-mono text-label text-ink-light">
             {statusData ? (
               <>
@@ -306,17 +441,27 @@ export default function LoopPage() {
 
       {control.text && !isEmpty ? <p className="text-label text-ink">{control.text}</p> : null}
 
-      {statusData ? (
-        <ProvenancePanel provenance={statusData.provenance} />
-      ) : (
-        <BackendNotice
-          endpoint="GET /api/status"
-          subject="The session header, the provenance, the session statistics and the circuit breaker"
-          failure={isAborted(status.failure) ? null : status.failure}
-          waking={status.waking}
-          onRetry={status.reload}
-        />
-      )}
+      {/*
+        `id="provenance"` is the trust section's destination for both "see the
+        protocol" and "view data details". Two links landing on one panel is
+        correct rather than lazy: the gate policy version and hash, the dataset
+        hash and the frozen-file count are all printed in this one block, so it
+        is genuinely where both answers live. Inventing a second destination
+        would mean a link that promises something this page does not show.
+      */}
+      <div id="provenance" className="scroll-mt-16">
+        {statusData ? (
+          <ProvenancePanel provenance={statusData.provenance} />
+        ) : (
+          <BackendNotice
+            endpoint="GET /api/status"
+            subject="The session header, the provenance, the session statistics and the circuit breaker"
+            failure={isAborted(status.failure) ? null : status.failure}
+            waking={status.waking}
+            onRetry={status.reload}
+          />
+        )}
+      </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         {/* The orientation strip's "watch it happen live" anchor lands here. */}

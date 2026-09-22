@@ -78,7 +78,8 @@ export interface VerdictStampProps {
   technical?: string[] | null;
   size: 'large' | 'small';
   /**
-   * Animates the stamp in once: 0.85 -> 1.0 over 180ms, ease-out, no bounce.
+   * Animates the stamp in once: 0.94 -> 1.0 over 180ms, ease-out, no bounce
+   * (the keyframe's own scale, softened from 0.85 — see globals.css).
    * The parent should key the component by entry id so a new verdict animates
    * and a re-render of the same verdict does not.
    */
@@ -175,7 +176,19 @@ function checkRows(metrics: DecisionMetrics, checks: GateChecks): CheckRowView[]
  * own tone, exactly like every other element in there, and outside one it takes
  * whatever the surrounding text is.
  */
-export function TechnicalDisclosure({ lines }: { lines: string[] }) {
+export function TechnicalDisclosure({
+  lines,
+  summary = 'What does this mean?',
+}: {
+  lines: string[];
+  /**
+   * The disclosure's own label. Overridden by callers whose question is not
+   * "what does this mean" — the real-result card asks "Why was it killed?",
+   * which is the question a reader actually has there. Defaulted rather than
+   * required so the two existing call sites are unchanged.
+   */
+  summary?: string;
+}) {
   // Self-guarding rather than trusting every caller to check: an empty
   // disclosure renders a "What does this mean?" heading over nothing, which
   // looks like a panel that failed to load. `killReasonTechnical` returns `[]`
@@ -185,7 +198,7 @@ export function TechnicalDisclosure({ lines }: { lines: string[] }) {
 
   return (
     <details className="mt-3 border-t border-current pt-3">
-      <summary className="cursor-pointer text-label">What does this mean?</summary>
+      <summary className="cursor-pointer text-label">{summary}</summary>
       <div className="mt-2 flex flex-col gap-1 font-mono text-label">
         {lines.map((line, index) => (
           <p key={index}>{line}</p>

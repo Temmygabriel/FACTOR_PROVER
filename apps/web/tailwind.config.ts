@@ -23,6 +23,17 @@ const config: Config = {
   theme: {
     borderRadius: {
       none: '0px',
+      // One token, added deliberately and no more.
+      //
+      // The reconfiguration brief (§27) permits a 4px radius on INTERACTIVE
+      // CONTROLS only. The reason is affordance rather than fashion: a filled
+      // button with hard 0px corners reads as a label, and a reader who cannot
+      // tell a button from a heading has lost the only control on the page.
+      //
+      // Cards and panels stay square — `sm` is not applied to them anywhere. The
+      // scale is still REPLACED rather than extended, so `rounded-md` and
+      // `rounded-lg` continue not to exist and cannot creep back in.
+      sm: '4px',
       full: '9999px',
     },
     boxShadow: {
@@ -50,6 +61,25 @@ const config: Config = {
         label: ['13px', { lineHeight: '20px' }],
         heading: ['14px', { lineHeight: '20px' }],
         stamp: ['28px', { lineHeight: '32px' }],
+
+        // The reconfiguration brief's scale (§25). ADDED, never renamed: the
+        // four sizes above are used across two dozen components, and renaming
+        // them would be a very large diff that changes no pixel.
+        //
+        // `hero` is the only size this large and §25 caps a screen at ONE
+        // hero-scale block — the cap is the point, because a page where
+        // everything shouts has no hierarchy at all.
+        //
+        // `metric` is mono and exists so the numbers on a verdict line align as
+        // a column rather than as a sentence.
+        body: ['14px', { lineHeight: '21px' }],
+        'body-lg': ['17px', { lineHeight: '26px' }],
+        h3: ['16px', { lineHeight: '21px' }],
+        h2: ['22px', { lineHeight: '26px' }],
+        h1: ['32px', { lineHeight: '37px' }],
+        hero: ['52px', { lineHeight: '55px' }],
+        'hero-lg': ['60px', { lineHeight: '61px' }],
+        metric: ['24px', { lineHeight: '24px' }],
       },
     },
   },

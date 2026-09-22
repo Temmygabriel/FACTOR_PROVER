@@ -26,7 +26,10 @@ const inter = Inter({
 });
 
 const ibmPlexMono = IBM_Plex_Mono({
-  weight: ['400'],
+  // 500 is the key-metric weight (reconfiguration brief §24); 400 stays the
+  // default for ordinary numeric data. Nothing heavier than 500: mono at 600+
+  // reads as a code block rather than as a measurement.
+  weight: ['400', '500'],
   subsets: ['latin'],
   variable: '--font-mono',
   display: 'swap',
