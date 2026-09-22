@@ -436,6 +436,17 @@ export default function LoopPage() {
            */
           committedEntries={log.data ? log.data.total : null}
           message={control.text}
+          /*
+           * The session header's own handler, not a second one. §15 asks the
+           * empty state for a primary "Run a test" control, and this is the same
+           * control in a second placement: same callback, same `pending` flag, so
+           * the two disable together and neither can start something the other
+           * does not know about. The header keeps its own button for every phase,
+           * so this placement disappearing after the first run leaves no state
+           * without a control.
+           */
+          onStart={toggleLoop}
+          starting={control.pending}
         />
       ) : null}
 

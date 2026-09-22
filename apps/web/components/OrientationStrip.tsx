@@ -55,7 +55,7 @@ export function OrientationStrip({ counts }: Props) {
   return (
     <section
       aria-label="What this product does"
-      className="border-b-2 border-amber bg-ink px-8 py-5"
+      className="border-b-2 border-amber bg-ink px-4 py-5 md:px-8"
     >
       <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-10">
         <div className="max-w-[62ch]">

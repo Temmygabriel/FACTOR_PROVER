@@ -93,7 +93,18 @@ export function killReasonTooltip(reason: string | null | undefined): string | n
 /** What each stamp label means, for the legend under the leaderboard. */
 export const VERDICT_MEANING: Record<Verdict, string> = {
   PROMOTED: 'the factor cleared the preregistered statistical gate',
-  KILLED: 'the factor did not survive multiple-testing correction',
+  /*
+   * "did not survive multiple-testing correction" until 2026-09-22, and it was
+   * wrong for most of the rows it described. This is the stamp's FALLBACK line —
+   * used when `killSentences` has nothing specific to say — so it has to be true
+   * of every kill, and the commonest kill in the record is not a BH one: a
+   * hypothesis that dies at `insufficient_obs` or `ic_below_floor` never reached
+   * the multiple-testing comparison at all, and telling its reader it failed that
+   * correction misstates which bar it fell at. The reconfiguration brief §10
+   * supplies the phrasing that is true of all of them, and the specific bar is
+   * named with its number in the "Why was it killed?" block one rung below.
+   */
+  KILLED: 'the idea did not clear the preregistered evidence bar',
   RETIRED: 'the factor was promoted but its edge has decayed',
   'AUTO-KILLED': 'the hypothesis did not conform to the required schema',
   'CIRCUIT BREAK': 'the loop halted itself; no verdict was reached on a factor',

@@ -103,7 +103,11 @@ is 24px.
   the page). Grouping is 1px rules, never shadow.
 - **No elevation model.** `boxShadow` is replaced with `none` in the config, so
   `shadow-md` and friends do not exist. This is enforced, not requested.
-- Layout stacks responsively at `md` (768px). There is no separate mobile product.
+- Layout stacks responsively at `md` (768px). There is no separate mobile product,
+  and no mobile gate: the shell renders one layout at every width. What actually
+  stacks is the nav bar (which wraps to two lines below `md`), every `grid-cols-1`
+  container, the pipeline's connectors, and the frame's gutters (`px-4` below `md`,
+  `px-8` above). See §10 for the one table that does not.
 
 ---
 
@@ -227,3 +231,26 @@ Recorded so that their absence reads as a decision rather than an oversight:
 - No animation library. Two keyframes in one file.
 - No component library. The components are in `components/` and are readable in one
   sitting.
+
+---
+
+## 10. Known limitations
+
+Recorded because the alternative is a reader discovering them and concluding the
+design was careless rather than constrained.
+
+**The verdict stamp's check table does not reflow.** It is a four-column grid
+(`8.5rem  5rem  1fr  4.5rem`, `VerdictStamp.tsx`) whose minimum width is about
+324px — wider than a panel's content box on a 360px phone. It scrolls inside its
+own box (`overflow-x-auto`) rather than pushing the page sideways, which is the
+lesser failure but is still a failure. It is **not** fixed here because the same
+grid is the load-bearing comparison on the Results and Evidence screens, and
+turning it into stacked cards would separate each value from the bar it is being
+compared against — the one relationship the table exists to show. On the live
+test screen it now sits behind the "Technical evidence" disclosure, so it is off
+the default phone view there.
+
+**There is no dark mode**, deliberately (§9), so a reader on a dark-mode device
+gets a light page. `:root` and `html` both declare the palette to stop a browser
+inverting form controls into dark boxes on a paper page.
+

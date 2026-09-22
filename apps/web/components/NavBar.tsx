@@ -87,15 +87,24 @@ export function NavBar() {
       {pathname === '/' ? null : <OrientationStrip counts={counts} />}
 
       <header className="sticky top-0 z-20 border-b border-rule bg-paper">
-      <div className="mx-auto flex h-12 w-full max-w-[1280px] items-center justify-between gap-8 px-8">
-        <div className="flex items-baseline gap-8">
+      {/*
+        The bar wraps below `md` instead of overflowing, and that is the whole of
+        the mobile treatment here. At `md` and up it is the 48px single row it has
+        always been; below that the wordmark and the chip take the first line and
+        the four nav items take a second, so nothing is clipped and nothing
+        scrolls sideways. A 12-unit fixed height would have forced a choice
+        between dropping a nav item and letting the items collide, and the brief's
+        §6 nav is four items by design.
+      */}
+      <div className="mx-auto flex w-full max-w-[1280px] flex-wrap items-center justify-between gap-x-6 gap-y-1 px-4 py-2 md:h-12 md:flex-nowrap md:gap-x-8 md:px-8 md:py-0">
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 md:gap-x-8">
           <Link
             href="/"
             className="text-label font-bold tracking-[0.08em] text-ink no-underline"
           >
             FACTOR PROVER
           </Link>
-          <nav className="flex items-baseline gap-6">
+          <nav className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {NAV.map((item) => {
               const active =
                 item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
@@ -104,7 +113,7 @@ export function NavBar() {
                   key={item.href}
                   href={item.href}
                   aria-current={active ? 'page' : undefined}
-                  className={`text-label no-underline ${
+                  className={`whitespace-nowrap text-label no-underline ${
                     active
                       ? 'border-b-2 border-ink pb-0.5 text-ink'
                       : 'text-ink-light hover:text-ink'
