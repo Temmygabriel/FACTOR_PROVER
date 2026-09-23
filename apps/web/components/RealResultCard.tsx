@@ -190,9 +190,10 @@ export function RealResultCard() {
           <p className="mt-3 max-w-[68ch] text-label text-ink-light">
             The p-value was {pValue} at both entries and never moved. With six hypotheses in the
             family the Benjamini-Hochberg correction put the bar at {barAtPromote}, and the idea
-            cleared it. With seven it put the bar at {barAtKill}, and the same idea failed. The
-            correction caught a result that a less honest system would have shipped, on its own,
-            in the record, with both entries visible side by side.
+            cleared it. With seven it put the bar at {barAtKill}, and the same idea failed.
+            Nothing about the idea changed between those two entries, and neither did its
+            p-value — the bar moved. Both entries are kept, so the reversal can be read rather
+            than taken on trust.
           </p>
         </div>
 
