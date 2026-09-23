@@ -1,7 +1,19 @@
 'use client';
 
 /**
- * The fixed top bar: wordmark, three nav items, and the loop-status chip.
+ * The fixed top bar: wordmark, four nav items, and the loop-status chip.
+ *
+ * THE LABELS CHANGED, THE ROUTES DID NOT (brief §6). "Loop" named an internal
+ * architecture, "Leaderboard" implied a competition between winners and "Log"
+ * sounded like raw engineering output. "Test / Results / Evidence" says what a
+ * visitor can do and what they will find. The hrefs are untouched on purpose:
+ * those paths are in the README, in shared links and in the submission, and
+ * renaming the visible word is free where renaming the route is not.
+ *
+ * "How it works" is the one item that does not own a route. It points at the
+ * pipeline on the home page, which is the actual answer to the question, and it
+ * is written as an absolute `/#how-it-works` so it resolves from the leaderboard
+ * and the log as well.
  *
  * The chip reads `/api/status` on a 30s poll rather than receiving the phase
  * from a page, because it has to be present and correct on every screen —
@@ -23,9 +35,10 @@ import { OrientationStrip } from './OrientationStrip';
 import { StatusChip } from './StatusChip';
 
 const NAV = [
-  { href: '/', label: 'Loop' },
-  { href: '/leaderboard', label: 'Leaderboard' },
-  { href: '/log', label: 'Log' },
+  { href: '/', label: 'Test' },
+  { href: '/leaderboard', label: 'Results' },
+  { href: '/log', label: 'Evidence' },
+  { href: '/#how-it-works', label: 'How it works' },
 ] as const;
 
 export function NavBar() {
@@ -47,11 +60,20 @@ export function NavBar() {
   return (
     <>
       {/*
-        The orientation strip, above the bar and on every route.
+        The orientation strip: on the leaderboard and the log, but NOT on the run
+        view (brief §7.2).
 
-        Above rather than below, because it is the first thing a reader should
-        meet and a navigation bar is not an answer to "what is this". On every
-        route, because a judge who opens a shared link lands on the log or the
+        It used to sit above this bar on all three routes, which was right when
+        the run view was a dashboard with nothing above it. It is the wrong
+        opener now that the home page has a hero: the brief's point is that a
+        visitor has not yet earned the session counters, and a dark band of
+        numbers above the headline spends the most valuable strip of the first
+        viewport on a tally that means nothing until the reader knows what was
+        being tallied. On `/` the run view renders it itself, below the hero and
+        the pipeline, from its own poll of the same endpoint.
+
+        On the other two routes it stays exactly where it was, and for the reason
+        it was built: a judge who opens a shared link lands on the log or the
         leaderboard — a table of kills with no statement of how many hypotheses
         produced them — and the ratio has to arrive before the table.
 
@@ -62,18 +84,27 @@ export function NavBar() {
         own, so the strip and the score in the bar cannot disagree about the same
         instant.
       */}
-      <OrientationStrip counts={counts} />
+      {pathname === '/' ? null : <OrientationStrip counts={counts} />}
 
       <header className="sticky top-0 z-20 border-b border-rule bg-paper">
-      <div className="mx-auto flex h-12 w-full max-w-[1280px] items-center justify-between gap-8 px-8">
-        <div className="flex items-baseline gap-8">
+      {/*
+        The bar wraps below `md` instead of overflowing, and that is the whole of
+        the mobile treatment here. At `md` and up it is the 48px single row it has
+        always been; below that the wordmark and the chip take the first line and
+        the four nav items take a second, so nothing is clipped and nothing
+        scrolls sideways. A 12-unit fixed height would have forced a choice
+        between dropping a nav item and letting the items collide, and the brief's
+        §6 nav is four items by design.
+      */}
+      <div className="mx-auto flex w-full max-w-[1280px] flex-wrap items-center justify-between gap-x-6 gap-y-1 px-4 py-2 md:h-12 md:flex-nowrap md:gap-x-8 md:px-8 md:py-0">
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 md:gap-x-8">
           <Link
             href="/"
             className="text-label font-bold tracking-[0.08em] text-ink no-underline"
           >
             FACTOR PROVER
           </Link>
-          <nav className="flex items-baseline gap-6">
+          <nav className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
             {NAV.map((item) => {
               const active =
                 item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
@@ -82,7 +113,7 @@ export function NavBar() {
                   key={item.href}
                   href={item.href}
                   aria-current={active ? 'page' : undefined}
-                  className={`text-label no-underline ${
+                  className={`whitespace-nowrap text-label no-underline ${
                     active
                       ? 'border-b-2 border-ink pb-0.5 text-ink'
                       : 'text-ink-light hover:text-ink'

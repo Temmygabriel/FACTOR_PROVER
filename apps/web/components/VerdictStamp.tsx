@@ -48,6 +48,7 @@
  *     a disclosure offered on every verdict rather than on kills alone.
  */
 
+import type { ReactNode } from 'react';
 import { CHECK_ROWS, VERDICT_MEANING } from '@/lib/copy';
 import { fmt, fmtIc, fmtInt, fmtP, fmtT, fmtThreshold } from '@/lib/format';
 import { CHECK_ORDER, PRESCRIBED } from '@/lib/policy';
@@ -78,7 +79,26 @@ export interface VerdictStampProps {
   technical?: string[] | null;
   size: 'large' | 'small';
   /**
-   * Animates the stamp in once: 0.85 -> 1.0 over 180ms, ease-out, no bounce.
+   * Where the five-row comparison table goes on a large stamp.
+   *
+   * `'inline'` (the default, and what every call site did before this prop
+   * existed) renders it directly under the reason line. `'collapsed'` puts the
+   * same table inside a "Technical evidence" disclosure.
+   *
+   * The live test screen passes `'collapsed'`, because brief §9's ladder asks
+   * the verdict to arrive first and the evidence to sit one rung below it: a
+   * reader meets KILLED and the sentence explaining it before meeting a table of
+   * five bar comparisons. The other screens keep it inline — a table of many
+   * stamps wants the rows visible without a click each.
+   *
+   * This is a display-layer choice and it applies to every verdict identically.
+   * It is NOT a branch on `verdict`, which is the thing this file exists to
+   * forbid: a promote's table collapses exactly as a kill's does.
+   */
+  checksDetail?: 'inline' | 'collapsed';
+  /**
+   * Animates the stamp in once: 0.94 -> 1.0 over 180ms, ease-out, no bounce
+   * (the keyframe's own scale, softened from 0.85 — see globals.css).
    * The parent should key the component by entry id so a new verdict animates
    * and a re-render of the same verdict does not.
    */
@@ -160,7 +180,7 @@ function checkRows(metrics: DecisionMetrics, checks: GateChecks): CheckRowView[]
 }
 
 /**
- * The "What does this mean?" disclosure.
+ * The disclosure used for every "there is more here" affordance in the product.
  *
  * A native `<details>`, not a React state toggle, for three reasons that all
  * matter here: it works with keyboard and screen readers without a line of ARIA,
@@ -175,22 +195,47 @@ function checkRows(metrics: DecisionMetrics, checks: GateChecks): CheckRowView[]
  * own tone, exactly like every other element in there, and outside one it takes
  * whatever the surrounding text is.
  */
-export function TechnicalDisclosure({ lines }: { lines: string[] }) {
+export function TechnicalDisclosure({
+  lines = [],
+  summary = 'What does this mean?',
+  children,
+}: {
+  /**
+   * Plain strings, rendered one per line in mono. Omitted by callers whose body
+   * is not text — the verdict stamp's collapsed check table passes `children`
+   * instead, because that body is a four-column grid and no array of strings can
+   * express it.
+   */
+  lines?: string[];
+  /**
+   * The disclosure's own label. Overridden by callers whose question is not
+   * "what does this mean" — the real-result card asks "Why was it killed?", and
+   * the stamp's check table is "Technical evidence". Defaulted rather than
+   * required so the existing call sites are unchanged.
+   */
+  summary?: string;
+  /** A structured body, for a disclosure whose contents are not lines of text. */
+  children?: ReactNode;
+}) {
   // Self-guarding rather than trusting every caller to check: an empty
-  // disclosure renders a "What does this mean?" heading over nothing, which
-  // looks like a panel that failed to load. `killReasonTechnical` returns `[]`
-  // for the rows this matters for, so the check belongs here where it cannot be
-  // forgotten.
-  if (lines.length === 0) return null;
+  // disclosure renders a heading over nothing, which looks like a panel that
+  // failed to load. `killReasonTechnical` returns `[]` for the rows this matters
+  // for, so the check belongs here where it cannot be forgotten. A caller that
+  // passes only `children` skips the guard on the lines and is taken at its
+  // word — it is passing a body, and an empty one is its own decision.
+  if (lines.length === 0 && children === undefined) return null;
 
   return (
     <details className="mt-3 border-t border-current pt-3">
-      <summary className="cursor-pointer text-label">What does this mean?</summary>
-      <div className="mt-2 flex flex-col gap-1 font-mono text-label">
-        {lines.map((line, index) => (
-          <p key={index}>{line}</p>
-        ))}
-      </div>
+      <summary className="cursor-pointer text-label">{summary}</summary>
+      {lines.length > 0 ? (
+        <div className="mt-2 flex flex-col gap-1 font-mono text-label">
+          {lines.map((line, index) => (
+            <p key={index}>{line}</p>
+          ))}
+        </div>
+      ) : null}
+      {children}
     </details>
   );
 }
@@ -202,6 +247,7 @@ export function VerdictStamp({
   checks,
   technical,
   size,
+  checksDetail = 'inline',
   animate = false,
 }: VerdictStampProps) {
   const tone = VERDICT_TONE[verdict];
@@ -231,6 +277,38 @@ export function VerdictStamp({
   const secondLines = supplied.length > 0 ? supplied : [VERDICT_MEANING[verdict]];
   const detail = technical && technical.length > 0 ? technical : null;
 
+  /*
+   * The comparison table, built once and placed by `checksDetail` below. Four
+   * columns: what was measured, what it came out as, what it had to clear, and
+   * whether it cleared. Values are right-aligned and mono so they column-align;
+   * the numbers are the same size and tone on every row, met or not.
+   */
+  const checkTable = rows ? (
+    /*
+     * `overflow-x-auto` because the grid below is four fixed columns — 8.5rem,
+     * 5rem, a flexible middle and 4.5rem — whose minimum width is about 324px,
+     * which is wider than the content box of a panel on a 360px phone. Without
+     * this the table would push the whole page sideways, and a page that scrolls
+     * horizontally is broken on every element, not just this one. It scrolls
+     * inside its own box instead. See DESIGN.md §9.
+     */
+    <div className="overflow-x-auto">
+      <div className="grid grid-cols-[8.5rem_5rem_minmax(0,1fr)_4.5rem] items-baseline gap-x-3 gap-y-1.5 font-mono text-label">
+        {rows.map((row) => (
+          <div key={row.key} className="contents">
+            <div>{row.label}</div>
+            <div className="text-right">{row.value}</div>
+            <div>{row.bar}</div>
+            <div className="text-right">{row.met ? 'met' : 'not met'}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 font-mono text-caption">
+        {met} of {rows.length} checks met
+      </div>
+    </div>
+  ) : null;
+
   return (
     /*
      * The 2° tilt lives on a WRAPPER, not on the stamp itself, and that is not a
@@ -259,28 +337,17 @@ export function VerdictStamp({
         </p>
       ))}
 
-      {rows ? (
-        <div className="mt-5 border-t border-current pt-3">
-          {/*
-            Four columns: what was measured, what it came out as, what it had to
-            clear, and whether it cleared. Values are right-aligned and mono so
-            they column-align; the numbers are the same size and tone on every
-            row, met or not.
-          */}
-          <div className="grid grid-cols-[8.5rem_5rem_minmax(0,1fr)_4.5rem] items-baseline gap-x-3 gap-y-1.5 font-mono text-label">
-            {rows.map((row) => (
-              <div key={row.key} className="contents">
-                <div>{row.label}</div>
-                <div className="text-right">{row.value}</div>
-                <div>{row.bar}</div>
-                <div className="text-right">{row.met ? 'met' : 'not met'}</div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 font-mono text-caption">
-            {met} of {rows.length} checks met
-          </div>
-        </div>
+      {checkTable ? (
+        checksDetail === 'collapsed' ? (
+          /*
+           * The rules table, one rung down. The disclosure draws its own top
+           * border, so this branch carries no `mt-5 border-t pt-3` wrapper — two
+           * rules a few pixels apart would read as an empty section between them.
+           */
+          <TechnicalDisclosure summary="Technical evidence">{checkTable}</TechnicalDisclosure>
+        ) : (
+          <div className="mt-5 border-t border-current pt-3">{checkTable}</div>
+        )
       ) : null}
 
       {/*

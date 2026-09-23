@@ -43,11 +43,19 @@
  * a rendering one, and the server accepts /api/start either way. A UI that
  * refused would be inventing a policy the gate does not have. So the failure is
  * shown, its consequence is stated, and the reader decides.
+ *
+ * THE BUTTON ADDED BY §15 IS DISABLED ON PHASE ALONE, which is the same rule and
+ * not an exception to it: `canStartSession(status.phase)` is about whether the
+ * loop is in a state that accepts a start, not about whether the checks passed.
+ * It stays enabled over a failed check, exactly as the header's own control does.
+ * It calls the header's handler rather than its own — see the `onStart` prop —
+ * so the two placements are one control and cannot diverge.
  */
 
 import { ABSENT, fmtInt, truncHash } from '@/lib/format';
 import { canStartSession } from '@/lib/phase';
 import type { StatusResponse } from '@/lib/types';
+import { Button } from './Button';
 
 interface Props {
   status: StatusResponse;
@@ -58,6 +66,19 @@ interface Props {
   committedEntries: number | null;
   /** The control route's own answer, or its failure. Never invented here. */
   message: string | null;
+  /**
+   * The session header's own loop control, passed down rather than
+   * reimplemented. This panel renders only while `hypotheses_attempted === 0`,
+   * so a control that lives HERE is a control that disappears the moment the
+   * loop has run once — which is the bug the session header was built to fix
+   * (see the comment on `#live-test` in app/page.tsx). Passing the header's
+   * handler means one control with two placements, not two controls: they cannot
+   * disagree about what the loop is doing, and they disable together on
+   * `starting`.
+   */
+  onStart: () => void;
+  /** The header's `control.pending`. Disables both placements at once. */
+  starting: boolean;
 }
 
 /**
@@ -135,6 +156,39 @@ function checks(status: StatusResponse): Check[] {
   return [partitions, policy, paper, gen];
 }
 
+/**
+ * The compact trust strip (brief §15), and the reason it is not a duplicate of
+ * the `TrustSection` a few panels above it on the same page.
+ *
+ * `TrustSection` states what the product IS: three claims about how it is built,
+ * true of the code regardless of what the server currently reports. This states
+ * whether those things are true RIGHT NOW, at the moment a reader is deciding
+ * whether to press the button — so it is read from the same `Check` rows the
+ * pre-flight list below renders, and the two cannot disagree.
+ *
+ * The third one has no pre-flight row to read, because whether a record exists
+ * is a property of the log endpoint rather than of the session. `committedEntries`
+ * is null while that read is in flight and a number once it has answered,
+ * including a confirmed zero — so "not read yet" renders quietly rather than as
+ * a failure, which is the distinction this panel is built around.
+ *
+ * No glyphs. The checklist below owns the ✓/✗ vocabulary, and repeating it here
+ * would turn an at-a-glance strip into a second status report.
+ */
+function trustStrip(
+  rows: Check[],
+  committedEntries: number | null,
+): { label: string; ok: boolean | null }[] {
+  const ok = (label: string): boolean | null =>
+    rows.find((row) => row.label === label)?.ok ?? null;
+
+  return [
+    { label: 'Pinned data', ok: ok('Data partitions') },
+    { label: 'Fixed gate', ok: ok('Gate policy') },
+    { label: 'Recorded result', ok: committedEntries !== null },
+  ];
+}
+
 function CheckRow({ check }: { check: Check }) {
   // Ink for a met check, killed red only for one that failed. The green is not
   // used: `promoted` means "this factor cleared the gate" everywhere else in the
@@ -158,7 +212,7 @@ function CheckRow({ check }: { check: Check }) {
   );
 }
 
-export function EmptyBench({ status, committedEntries, message }: Props) {
+export function EmptyBench({ status, committedEntries, message, onStart, starting }: Props) {
   const rows = checks(status);
   /*
    * Still needed for the copy below, which addresses the reader differently
@@ -187,23 +241,55 @@ export function EmptyBench({ status, committedEntries, message }: Props) {
       aria-labelledby="empty-bench-heading"
     >
       {/*
-        Scoped to the session, deliberately, and unconditionally — not swapped out
-        when a committed log exists. The unscoped version ("No hypothesis has been
-        tested yet.") was false whenever a committed log existed, which on the
-        deployed free tier is every moment after a cold start. A heading that is
-        switched off a second, not-yet-arrived read would be a different version of
-        the same mistake: for as long as that read is in flight, the heading would
-        assert something this panel cannot know.
+        §15's headline, and it is an INVITATION rather than a state claim — which
+        is why it does not reintroduce the bug the previous heading had. "No
+        hypothesis has been tested yet" asserted something about the project and
+        was false whenever a committed log existed; "Test your first trading idea"
+        asserts nothing about the record, so there is no reading of the page on
+        which it is wrong. The session-scoped fact still has to be stated, and it
+        is, below the controls.
       */}
-      <h2 id="empty-bench-heading" className="text-heading font-semibold text-ink">
-        No hypothesis has been tested in this session yet.
+      <h2 id="empty-bench-heading" className="text-h2 font-semibold text-ink">
+        Test your first trading idea
       </h2>
-      <p className="mt-1 max-w-[80ch] text-label text-ink-light">
-        {canStart
-          ? 'In a moment, the bench will start running them.'
-          : 'The loop is running; the first hypothesis is on its way.'}
+      <p className="mt-2 max-w-[70ch] text-body text-ink-light">
+        Factor Prover will generate an idea, test it against the available market data, and
+        explain exactly why it survives or gets killed.
       </p>
-      <p className="mt-3 text-heading text-ink">Most will fail. One might not.</p>
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Button variant="primary" onClick={onStart} disabled={!canStart || starting}>
+          {starting ? 'Sending…' : 'Run a test'}
+        </Button>
+        <p className="text-caption text-ink-light">
+          Paper/demo mode only. No real funds are used by this demo.
+        </p>
+      </div>
+
+      {/*
+        The compact trust strip, driven by the pre-flight rows rather than being
+        three static words: a strip that said "Pinned data" two inches above a row
+        reading "not frozen" would be this page contradicting itself. A claim the
+        server has not confirmed is set in quiet ink rather than ticked — the
+        checklist below owns the glyph vocabulary.
+      */}
+      <ul className="mt-5 flex flex-wrap gap-x-8 gap-y-2 border-y border-rule py-2">
+        {trustStrip(rows, committedEntries).map((item) => (
+          <li
+            key={item.label}
+            className={`text-label ${item.ok === true ? 'text-ink' : 'text-ink-light'}`}
+          >
+            {item.label}
+          </li>
+        ))}
+      </ul>
+
+      <p className="mt-4 max-w-[70ch] text-label text-ink-light">
+        {canStart
+          ? 'Nothing has been tested in this session yet — the loop is idle and the bench is clear.'
+          : 'The loop is running; the first hypothesis of this session is on its way.'}
+      </p>
+      <p className="mt-3 text-h3 text-ink">Most will fail. One might not.</p>
 
       {/*
         The committed record, stated rather than left implied. Without this, the
@@ -237,13 +323,9 @@ export function EmptyBench({ status, committedEntries, message }: Props) {
       </div>
 
       {/*
-        The start control used to live here, and that placement was the bug: this
-        panel renders only while `hypotheses_attempted === 0`, so once the loop had
-        run once and stopped there was no start control anywhere on the page. It
-        now lives in the session header, which owns the loop control for every
-        phase, so this panel is purely explanatory. `message` stays — the control
-        route's own answer is reported next to where the control is, but a result
-        that arrived while this panel was on screen still belongs on it.
+        The control route's own answer, kept next to the control that produced it.
+        The "Run a test" button above is the session header's handler in a second
+        placement, so this message belongs equally to either button.
       */}
       {message ? (
         <div className="mt-5">

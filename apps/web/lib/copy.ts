@@ -93,7 +93,18 @@ export function killReasonTooltip(reason: string | null | undefined): string | n
 /** What each stamp label means, for the legend under the leaderboard. */
 export const VERDICT_MEANING: Record<Verdict, string> = {
   PROMOTED: 'the factor cleared the preregistered statistical gate',
-  KILLED: 'the factor did not survive multiple-testing correction',
+  /*
+   * "did not survive multiple-testing correction" until 2026-09-22, and it was
+   * wrong for most of the rows it described. This is the stamp's FALLBACK line —
+   * used when `killSentences` has nothing specific to say — so it has to be true
+   * of every kill, and the commonest kill in the record is not a BH one: a
+   * hypothesis that dies at `insufficient_obs` or `ic_below_floor` never reached
+   * the multiple-testing comparison at all, and telling its reader it failed that
+   * correction misstates which bar it fell at. The reconfiguration brief §10
+   * supplies the phrasing that is true of all of them, and the specific bar is
+   * named with its number in the "Why was it killed?" block one rung below.
+   */
+  KILLED: 'the idea did not clear the preregistered evidence bar',
   RETIRED: 'the factor was promoted but its edge has decayed',
   'AUTO-KILLED': 'the hypothesis did not conform to the required schema',
   'CIRCUIT BREAK': 'the loop halted itself; no verdict was reached on a factor',
@@ -346,6 +357,31 @@ function windowProse(minutes: number): string {
 }
 
 /**
+ * "a" or "an", chosen by SOUND rather than by spelling.
+ *
+ * The naive rule — "an" before a vowel letter — gets this product's own nouns
+ * wrong, and they are the ones a reader meets first. "ETH" begins with a vowel
+ * letter and takes "an". "RGOOGL" begins with a consonant letter and ALSO takes
+ * "an", because the letter R is pronounced "arr". The rule that works is about
+ * letter NAMES: a word read as an initialism takes "an" when the name of its
+ * first letter begins with a vowel sound.
+ *
+ * So: a vowel letter, or one of the consonants whose names begin with a vowel —
+ * F, H, L, M, N, R, S, X. Hence "an F", "an R", "an X", against "a B", "a D".
+ *
+ * This is a spelling rule standing in for a pronunciation rule, so it will get
+ * some acronym it has not met wrong. That is acceptable HERE and only here: the
+ * two things it is applied to are this product's fixed vocabulary — signal nouns
+ * and target symbols — and the targets are all exchange tickers, which is the
+ * case the rule was written for. A general article picker would need phonetics
+ * this file does not have and does not need.
+ */
+function articleFor(word: string): 'a' | 'an' {
+  const first = word.trim().charAt(0).toUpperCase();
+  return 'AEIOUFHLMNRSX'.includes(first) ? 'an' : 'a';
+}
+
+/**
  * The hypothesis as a question a reader outside the project can answer.
  *
  * Built from the structured fields at render time, never from the generator's
@@ -378,11 +414,20 @@ export function hypothesisQuestion(
       ? noun.bare
       : noun.full
     : hypothesis.signal.replace(/_/g, ' ');
+  const target = targetLabel(hypothesis.target);
   const direction = hypothesis.direction === 'negative' ? 'fall' : 'rise';
 
+  /*
+   * The articles are chosen rather than written, and that is a fix rather than a
+   * flourish. This sentence used to hardcode "a", which produced "Does a ETH
+   * price move ... predict a RGOOGL price rise" — wrong twice, in the one
+   * sentence a reader meets first, and now the headline of the real-result card.
+   * Both nouns are initialisms, which is precisely the case the naive vowel rule
+   * gets wrong in both directions.
+   */
   return (
-    `Does a ${subject} ${conditionPlain(hypothesis.signal, condition)} ` +
-    `predict a ${targetLabel(hypothesis.target)} price ${direction} ` +
+    `Does ${articleFor(subject)} ${subject} ${conditionPlain(hypothesis.signal, condition)} ` +
+    `predict ${articleFor(target)} ${target} price ${direction} ` +
     `over the next ${windowProse(hypothesis.forward_return_minutes)}?`
   );
 }

@@ -6,11 +6,17 @@
  * Two animations exist in this product, and no more.
  *
  *  - .stamp-in: the verdict stamp arriving. It runs once per verdict, 180ms,
- *    scale 0.85 -> 1.0, ease-out, no bounce. Design spec §5: "Motion is a single
+ *    scale 0.94 -> 1.0, ease-out, no bounce. Design spec §5: "Motion is a single
  *    event per screen."
  *  - .loop-pulse: the amber dot beside "Loop active" while a backtest is
  *    running. 2s, opacity only. The only ambient animation; it stops when the
  *    verdict is issued because the element is no longer rendered.
+ *
+ * 0.94 rather than the 0.85 this started at (reconfiguration brief §30.6). The
+ * stamp is the single largest element on the test screen, and at 0.85 its
+ * arrival reads as the page jumping rather than as a mark being pressed on.
+ * The brief's motion budget is one primary animation per screen, which is what
+ * these two already are — nothing was added.
  *
  * Both are disabled under prefers-reduced-motion. The stamp still appears, it
  * simply appears at full size — no information is carried by the animation, so
@@ -18,7 +24,7 @@
  */
 @keyframes stamp-in {
   from {
-    transform: scale(0.85);
+    transform: scale(0.94);
     opacity: 0;
   }
   to {
@@ -77,11 +83,35 @@
   .loop-pulse {
     animation: loop-pulse 2s ease-in-out infinite;
   }
+}
 
-  @media (prefers-reduced-motion: reduce) {
-    .stamp-in,
-    .loop-pulse {
-      animation: none;
-    }
+/*
+ * Reconfiguration brief §49. This replaces the two-class rule that used to sit
+ * inside @layer utilities, and it is deliberately broader than what it replaced.
+ *
+ * The old version named `.stamp-in` and `.loop-pulse`, which was correct for a
+ * product with exactly those two animations. It is the wrong shape for one that
+ * is growing disclosure rows and hover transitions, because a list of names is
+ * a list somebody has to remember to add to — and the failure mode is silent. A
+ * reader who asked their operating system for less motion would simply get it
+ * anyway, on whichever component was added last.
+ *
+ * `*` rather than the two media-query-free utilities, so a new animation is
+ * covered the day it is written rather than the day someone notices.
+ *
+ * Durations are set near zero rather than to `none` so that any transitionend
+ * or animationend listener still fires — a component that waits for one to
+ * unmount or to reveal content would otherwise hang forever for exactly the
+ * users this rule exists to protect. `scroll-behavior` is included because a
+ * smooth scroll is motion too, and it is the one the old rule missed entirely.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
