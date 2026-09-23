@@ -176,45 +176,86 @@ jobs:
       - name: Install dependencies
         # Skipped while there is no log to verify, so this job costs one checkout
         # until the first entry is committed.
-        if: hashFiles('apps/agent/logs/decisions.jsonl') != ''
+        if: hashFiles('apps/agent/logs/decisions*.jsonl') != ''
         run: npm install --no-audit --no-fund
 
       - name: Verify the hash chain
+        # EVERY committed decision record, not one hardcoded path.
+        #
+        # The record this project is judged on is a hash chain, and a chain that
+        # nothing re-checks is a claim rather than a property. This job used to
+        # name `decisions.jsonl` outright, so the moment a second record was
+        # committed beside it — `decisions-llm.jsonl`, the session a model
+        # proposed — it became the one artifact in the repository with no
+        # verification at all. The glob is `decisions*.jsonl` deliberately: a
+        # third record is covered by existing rather than by someone
+        # remembering to come back and add it here.
+        #
+        # The paper logs match `*.jsonl` but not this pattern, which is right —
+        # they are execution records, not decision chains.
         run: |
-          LOG=apps/agent/logs/decisions.jsonl
-          if [ ! -f "$LOG" ]; then
+          set -euo pipefail
+
+          shopt -s nullglob
+          LOGS=(apps/agent/logs/decisions*.jsonl)
+          shopt -u nullglob
+
+          if [ ${#LOGS[@]} -eq 0 ]; then
             echo "no decision log committed yet — nothing to verify"
             exit 0
           fi
 
-          set +e
-          # `--no-install` so a missing tsx is a hard failure rather than a silent
-          # download from the registry mid-run.
-          report=$(npx --no-install tsx apps/agent/src/log/verify.ts --file "$LOG" 2>&1)
-          status=$?
-          set -e
-          echo "$report"
+          failed=0
+          for LOG in "${LOGS[@]}"; do
+            echo ""
+            echo "=== $LOG ==="
 
-          # The verifier's CLI entry point runs only when it detects it was invoked
-          # directly. If that detection ever stops working under the runner, the
-          # exit code is 0 and a broken chain would pass — so the report's own
-          # PASS/FAIL line is required as evidence that it actually ran.
-          if ! printf '%s' "$report" | grep -qE '^(PASS|FAIL) — '; then
-            echo "::error::the verifier produced no PASS/FAIL report — it did not run"
-            exit 1
-          fi
-          exit $status
+            set +e
+            # `--no-install` so a missing tsx is a hard failure rather than a
+            # silent download from the registry mid-run.
+            report=$(npx --no-install tsx apps/agent/src/log/verify.ts --file "$LOG" 2>&1)
+            status=$?
+            set -e
+            echo "$report"
+
+            # The verifier's CLI entry point runs only when it detects it was
+            # invoked directly. If that detection ever stops working under the
+            # runner, the exit code is 0 and a broken chain would pass — so the
+            # report's own PASS/FAIL line is required as evidence it actually
+            # ran. Checked PER LOG rather than once for the same reason the glob
+            # replaced the hardcoded path: a second record must not be able to
+            # ride on the first one's evidence.
+            if ! printf '%s' "$report" | grep -qE '^(PASS|FAIL) — '; then
+              echo "::error::$LOG produced no PASS/FAIL report — the verifier did not run"
+              failed=1
+              continue
+            fi
+
+            if [ "$status" -ne 0 ]; then
+              echo "::error::$LOG did not verify (exit $status)"
+              failed=1
+            fi
+          done
+
+          exit "$failed"
 
       - name: Log summary
         if: always()
         run: |
           {
-            echo "### Decision log"
+            echo "### Decision logs"
             echo
             echo '```'
-            if [ -f apps/agent/logs/decisions.jsonl ]; then
-              wc -l < apps/agent/logs/decisions.jsonl | xargs echo "lines:"
-            else
+            shopt -s nullglob
+            found=0
+            for LOG in apps/agent/logs/decisions*.jsonl; do
+              found=1
+              printf '%-42s %s\n' "$LOG" "$(wc -l < "$LOG" | tr -d ' ') entries"
+            done
+            # An `if`, not `[ ... ] && echo`. The runner invokes this as `bash -e`,
+            # so a `&&` whose left side is false would return 1 and fail the step
+            # in the ordinary case where logs DO exist.
+            if [ "$found" -eq 0 ]; then
               echo "no log committed yet"
             fi
             echo '```'
