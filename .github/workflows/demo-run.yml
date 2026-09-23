@@ -48,6 +48,25 @@ on:
           differ, but leaves the working tree alone.
         type: boolean
         default: true
+      out:
+        description: >-
+          Where to write this session's log. The default is the record of a
+          MODEL-PROPOSED session, which is a different document from the
+          committed deterministic one and is kept in its own file for that
+          reason.
+        required: true
+        default: 'apps/agent/logs/decisions-llm.jsonl'
+      protect_artifact:
+        description: >-
+          Refuse to write apps/agent/logs/decisions.jsonl. Leave this true. That
+          file is the session the submission describes, and it is the one a
+          judge reads as this project's record. It was destroyed twice by runs
+          that wrote to its path because the path was hardcoded here; PROGRESS.md
+          records the incident as finding 43, and this input is that finding's
+          missing guard. Set it false only when deliberately regenerating the
+          deterministic artifact, having first read what is in the file.
+        type: boolean
+        default: true
 
 # Pushing the log back needs write access. Everything else in this repository
 # runs with `contents: read`; this is the one workflow that writes.
@@ -111,6 +130,50 @@ jobs:
         # their hash. Checking them first means a run cannot quietly produce a
         # log against a dataset that does not match the committed one.
         run: node --experimental-strip-types apps/agent/scripts/rebuild-manifest.ts --check
+
+      - name: Refuse to write a document the run would misdescribe
+        env:
+          OUT: ${{ inputs.out }}
+          PROTECT: ${{ inputs.protect_artifact }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # Finding 43's missing guard, placed HERE rather than in the commit step
+        # for a reason that is easy to get wrong: the runner is invoked with
+        # `--replace`, which REMOVES the file before the session starts. A check
+        # in the commit step would run after the artifact was already gone and
+        # would report the loss as an ordinary run.
+        #
+        # TWO RULES, because there are two ways to get this wrong. One is
+        # overwriting a record that is worth keeping. The other is writing a
+        # record whose FILENAME disagrees with its contents — a deterministic
+        # session left in a file called `decisions-llm`, which is the same class
+        # of error as the artifact/experiment splice that took a git-archaeology
+        # session to untangle. Both are refused rather than warned about,
+        # because the cost of the wrong answer is a submission artifact.
+        run: |
+          set -euo pipefail
+
+          if [ "$PROTECT" = "true" ] && [ "$OUT" = "apps/agent/logs/decisions.jsonl" ]; then
+            echo "::error::this run would overwrite apps/agent/logs/decisions.jsonl —"
+            echo "::error::the deterministic session the submission describes, and the"
+            echo "::error::artifact two earlier runs destroyed by writing to that path."
+            echo "::error::Leave out at its default, or set protect_artifact to false"
+            echo "::error::if regenerating that artifact is genuinely the intent."
+            exit 1
+          fi
+
+          if [ -z "${GROQ_API_KEY:-}" ] && [ -z "${GEMINI_API_KEY:-}" ] \
+             && [ "$OUT" = "apps/agent/logs/decisions-llm.jsonl" ]; then
+            echo "::error::no provider key is set, so this run's proposals would come from"
+            echo "::error::the deterministic enumerator — but $OUT is the record of a"
+            echo "::error::MODEL-PROPOSED session, and writing an enumerated one there"
+            echo "::error::would leave the filename describing the wrong document."
+            echo "::error::Pass out=apps/agent/logs/decisions-check.jsonl to reproduce the"
+            echo "::error::record without touching either committed document, or set a key."
+            exit 1
+          fi
+
+          echo "[guard] this run writes to $OUT"
 
       - name: Run the session
         env:
@@ -176,7 +239,7 @@ jobs:
           npx tsx apps/agent/src/scripts/run-session.ts \
             --iterations "${{ inputs.iterations }}" \
             --delay-ms "$DELAY_MS" \
-            --out apps/agent/logs/decisions.jsonl \
+            --out "${{ inputs.out }}" \
             --replace 2>&1 | tee demo-run.log
 
       - name: Verify the log, as a reader would
@@ -188,7 +251,7 @@ jobs:
         run: |
           set -o pipefail
           npx tsx apps/agent/src/log/verify.ts \
-            --file apps/agent/logs/decisions.jsonl 2>&1 | tee verify.log
+            --file "${{ inputs.out }}" 2>&1 | tee verify.log
           if ! grep -qE '^(PASS|FAIL) — ' verify.log; then
             echo "::error::the verifier produced no PASS/FAIL report — it did not run"
             exit 1
@@ -205,7 +268,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
-          LOG=apps/agent/logs/decisions.jsonl
+          LOG="${{ inputs.out }}"
 
           if [ ! -f "$LOG" ]; then
             echo "::error::the run produced no log"
@@ -256,6 +319,7 @@ jobs:
           # "commit:: command not found" — silently, because a failing command
           # substitution in an assignment does not stop the script.
           if [ -n "${GROQ_API_KEY:-}" ] || [ -n "${GEMINI_API_KEY:-}" ]; then
+            PROPOSER_KIND="model-proposed"
             PROPOSER_SUMMARY="Proposals came from the live provider chain: each hypothesis was
           proposed by a model, and the tier that answered is recorded on the entry.
           The session is therefore NOT bit-reproducible — a second run samples
@@ -266,6 +330,7 @@ jobs:
           path instead, re-run this workflow without a key and with commit set to
           false."
           else
+            PROPOSER_KIND="deterministic"
             PROPOSER_SUMMARY="Proposals came from the deterministic enumerator, since no provider key
           is configured. That makes the session itself reproducible: run this
           workflow again, with or without a key, and the enumerated entries
@@ -280,7 +345,9 @@ jobs:
           # the shape of the one message that says whether a model proposed these
           # hypotheses is a bad trade.
           git commit --cleanup=strip -F - <<MSG
-          demo run: session on the frozen dataset
+          demo run: $PROPOSER_KIND session on the frozen dataset
+
+          Document: $LOG
 
           Produced by .github/workflows/demo-run.yml, which runs the same
           SessionLoop the deployed server runs, against the committed frozen
@@ -304,8 +371,9 @@ jobs:
           {
             echo "### Demo run"
             echo
-            if [ -f apps/agent/logs/decisions.jsonl ]; then
-              entries=$(wc -l < apps/agent/logs/decisions.jsonl | tr -d ' ')
+            echo "- document: \`${{ inputs.out }}\`"
+            if [ -f "${{ inputs.out }}" ]; then
+              entries=$(wc -l < "${{ inputs.out }}" | tr -d ' ')
               echo "- entries: **$entries**"
             else
               echo "- no log was produced"

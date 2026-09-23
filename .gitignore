@@ -25,6 +25,18 @@ npm-debug.log*
 # The hash-chained decision log is part of the research record and must be
 # committed — it is a submission checklist item (build spec §17).
 
+# NOTE: apps/agent/logs/decisions-llm.jsonl is intentionally NOT ignored either.
+# There are two committed records because there are two kinds of session, and
+# `generator` on every entry says which one produced it — decisions.jsonl is the
+# deterministic session, decisions-llm.jsonl is the one a model proposed. Keeping
+# them in one file would mean one of the two facts got overwritten, and the whole
+# point of the field is that neither fact is hidden.
+
+# Scratch output from a reproduction check — the `out` the demo-run workflow
+# tells you to pass when you want to re-run a session without writing either
+# committed document. A record of a check is not a record of the project.
+decisions-check.jsonl
+
 # NOTE: apps/agent/data/frozen/ is intentionally NOT ignored.
 # The frozen partition datasets are the artifact the whole provenance claim
 # rests on: every verdict's dataset_sha256 refers to these exact bytes, so a
