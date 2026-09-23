@@ -36,6 +36,7 @@ import { Button } from '@/components/Button';
 import { DecisionLog } from '@/components/DecisionLog';
 import { fmtClockUtc, fmtInt } from '@/lib/format';
 import { ApiFailure, getLog, isAborted, verifyChain } from '@/lib/api';
+import { proposerSentence } from '@/lib/copy';
 import type { DecisionRow, VerifyResponse } from '@/lib/types';
 import { useNow, useResource } from '@/lib/useResource';
 
@@ -222,6 +223,8 @@ export default function LogPage() {
 
   const firstPage = useMemo(() => log.data?.entries ?? [], [log.data]);
 
+  const proposer = useMemo(() => proposerSentence(log.data?.generators), [log.data]);
+
   const entries = useMemo(() => {
     if (older.length === 0) return firstPage;
     const seen = new Set(firstPage.map((row) => row.entry_id));
@@ -294,6 +297,18 @@ export default function LogPage() {
             ? `${fmtInt(log.data.total)} entries · each entry hashes the one before it, so altering or removing a line breaks every hash after it.`
             : 'the entry count is not available yet'}
         </p>
+        {/*
+          Who proposed these hypotheses, in words, from the server's tally over
+          the whole file. It sits directly under the entry count because that is
+          the sentence a reader is already reading when they start wondering
+          whether a model wrote this — and because the pre-flight checklist
+          reports the generator chain's LIVE tiers, which is a fact about the
+          deployment rather than about the record on this screen. Absent tally
+          renders nothing: see `proposerSentence`.
+        */}
+        {proposer ? (
+          <p className="mt-2 max-w-[80ch] text-label text-ink">{proposer}</p>
+        ) : null}
       </section>
 
       {log.stale ? (

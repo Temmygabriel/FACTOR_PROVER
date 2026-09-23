@@ -1150,11 +1150,17 @@ export class SessionLoop {
   }
 
   getLog(opts: { limit?: number; before?: string | null } = {}): LogResponse {
-    const { rows, next_cursor } = pageRows(this.log.readAll(), this.policy, {
+    const all = this.log.readAll();
+    const { rows, next_cursor } = pageRows(all, this.policy, {
       limit: opts.limit ?? 50,
       before: opts.before ?? null,
     });
-    return { entries: rows, total: this.log.entryCount, next_cursor };
+    return {
+      entries: rows,
+      total: this.log.entryCount,
+      next_cursor,
+      generators: generatorTally(all),
+    };
   }
 
   /**
@@ -1171,11 +1177,17 @@ export class SessionLoop {
    * a committed record serves it without a chance of rewriting it.
    */
   getCommittedLog(opts: { limit?: number; before?: string | null } = {}): LogResponse {
-    const { rows, next_cursor } = pageRows(this.committed.readAll(), this.policy, {
+    const all = this.committed.readAll();
+    const { rows, next_cursor } = pageRows(all, this.policy, {
       limit: opts.limit ?? 50,
       before: opts.before ?? null,
     });
-    return { entries: rows, total: this.committed.entryCount, next_cursor };
+    return {
+      entries: rows,
+      total: this.committed.entryCount,
+      next_cursor,
+      generators: generatorTally(all),
+    };
   }
 
   getProvenance(): Provenance {
@@ -1477,6 +1489,36 @@ export class SessionLoop {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Which tiers proposed the hypotheses in a log, and how many each.
+ *
+ * A tally of a field that is already on every entry, so it adds no claim — it
+ * makes an existing one legible. It is computed over the WHOLE file rather than
+ * over the page being served, because those are different statements and only
+ * one of them is safe to make: "of the ten rows you can see, ten were
+ * enumerated" is not "this record is enumerated", and a reader who took the
+ * first for the second would have been misled by a page boundary.
+ *
+ * The need for it is concrete. `EmptyBench` reports the generator chain's LIVE
+ * tiers, which on the deployed instance is `groq` — and shown beside a record
+ * that no model proposed, that reads as a claim about the record. The tier that
+ * is configured and the tier that proposed what you are reading are two
+ * different facts. Stating the second is what keeps the first from being read as
+ * it.
+ *
+ * Sorted by count, then by name, so the order is stable between requests rather
+ * than dependent on Map insertion order.
+ */
+function generatorTally(entries: readonly { generator: string }[]): { tier: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    counts.set(entry.generator, (counts.get(entry.generator) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([tier, count]) => ({ tier, count }))
+    .sort((a, b) => b.count - a.count || a.tier.localeCompare(b.tier));
+}
 
 function defaultLogPath(): string {
   // scripts/ and src/ both live under apps/agent, and the log is a submission

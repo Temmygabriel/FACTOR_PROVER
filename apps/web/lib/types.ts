@@ -221,6 +221,18 @@ export interface LogResponse {
   total: number;
   /** Pass back as `before` to fetch the next page. */
   next_cursor: string | null;
+  /**
+   * Which tiers proposed the hypotheses in the WHOLE record, and how many each.
+   *
+   * Not a tally of `entries`, which is one page. The distinction is the reason
+   * the field exists: a tally over a page would let a reader conclude "this
+   * record was enumerated" from having seen ten rows, and the server computes it
+   * over the file precisely so the UI never has to make that inference.
+   *
+   * Optional because the server may be older than this client. Absent means
+   * unknown, and the UI says nothing rather than guessing.
+   */
+  generators?: { tier: string; count: number }[];
 }
 
 // ---------------------------------------------------------------------------

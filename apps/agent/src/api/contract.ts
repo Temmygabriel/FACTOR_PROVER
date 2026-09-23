@@ -225,6 +225,25 @@ export interface LogResponse {
   total: number;
   /** Pass back as `before` to fetch the next page. */
   next_cursor: string | null;
+  /**
+   * Which tiers proposed the hypotheses in this record, and how many each.
+   *
+   * A tally of `generator` over the WHOLE file, not over `entries`. Both are
+   * honest and they are different statements: "of the ten rows on this page, ten
+   * were enumerated" is not "this record is enumerated", and a reader who took
+   * the first for the second would have been misled by a page boundary.
+   *
+   * It exists because the page already said something adjacent and misleading:
+   * the homepage reports the generator chain's LIVE tiers, which on the deployed
+   * instance is `groq`, next to a record that no model proposed. The tier that
+   * is configured and the tier that proposed what you are reading are two
+   * different facts, and the page states both rather than leaving a reader to
+   * join them wrongly.
+   *
+   * Optional so that an older caller reading a newer payload, or the reverse,
+   * degrades to "unknown" rather than to a wrong answer.
+   */
+  generators?: { tier: string; count: number }[];
 }
 
 // ---------------------------------------------------------------------------
