@@ -1581,3 +1581,47 @@ that, and a test asserts it says it.
   requirement this project is thinnest on — the Agentic Trading track asks for a paper-trading
   log run during the competition, recommended ≥2 weeks, and a longer live record is the honest
   way to close that gap.
+
+- **2026-09-23** — **The homepage led with a session id; it now leads with the product.** A
+  visitor's first impression was `Session <uuid>` as the page's `<h1>`, followed by a
+  provenance hash panel and a hypothesis JSON, before anything said what the product does. The
+  UI/UX reconfiguration (`FACTOR_PROVER_UI_UX_RECONFIGURATION_v2.md`, 3111 lines) audited this
+  and the diagnosis was correct and checkable. Rebuilt in the brief's order — what this is →
+  how it works → a real result → why to trust it → the live instrument — across three passes,
+  all on `feat/ui-ux-reconfiguration`, all through CI. The honesty machinery was not touched:
+  the session-vs-committed distinction, `hasGateEvidence`, the equal-weight verdict tones and
+  the SSE layer are all intact, and the new components read only data the page already fetched.
+
+  **Two errors in the brief were found by checking rather than by trusting it, and neither was
+  implemented literally.** (1) §40 specifies the `FileCheck2` icon for the tamper-evident
+  record; **`FileCheck2` does not exist in lucide-react 1.47.0** — the numbered variants were
+  removed in lucide's 1.0 rename — so importing it fails the build. Checked against the
+  installed package's `dist/lucide-react.d.ts` and implemented as `FileCheck`. (2) §9/§39's
+  illustrative "real result" card names the hypothesis as "BTC funding" and shows one BH bar;
+  the actual E-0006 entry is ETH spot momentum into a tokenised Alphabet position, and the two
+  entries have **different** bars (0.0167 and 0.0143). The card is built from the recorded
+  values, because the promote-then-demote across two thresholds is the best demonstration the
+  project has and it only works if both bars are shown.
+
+  **Finding 48 — every entry in the committed record was generated deterministically.** All 201
+  entries in `apps/agent/logs/decisions.jsonl` carry `generator: deterministic`: the committed
+  session ran with no provider key, so the LLM tiers produced **zero** hypotheses. A judge who
+  greps the log — which the project actively invites — finds this in one command. It is
+  recorded here rather than worked around, and it is why `TRACK_DECISION.md` (local-only)
+  recommends **Alpha Factory** over Agentic Trading: claiming "the LLM is the primary trading
+  decision-maker" would contradict the project's own central claim that a model must not be
+  trusted to mark its own work. See `LLM_ROLE.md`.
+
+  **One live misstatement found and fixed while wiring the redesign.** `VERDICT_MEANING.KILLED`
+  read "did not survive multiple-testing correction". It is the verdict stamp's *fallback*
+  line, so it has to be true of every kill — and the commonest kills in the record
+  (`insufficient_obs`, `ic_below_floor`) never reached the multiple-testing comparison at all.
+  It was therefore wrong on the Results and Evidence screens too, not only on the new one. Now
+  reads "the idea did not clear the preregistered evidence bar", with the specific bar and its
+  number named in the "Why was it killed?" block beneath it.
+
+  The mobile gate (`MobileNotice.tsx`) is deleted. Below 768px the shell now stacks instead of
+  declining to draw, because a judge may open the link from a phone before sitting down at a
+  laptop. One table does not reflow — the stamp's four-column check grid scrolls inside its own
+  box — and that is recorded in `apps/web/DESIGN.md` §10 rather than left for a reader to find.
+
