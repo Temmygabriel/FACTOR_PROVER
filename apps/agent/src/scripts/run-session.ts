@@ -298,6 +298,30 @@ function substance(path: string): string[] {
 }
 
 /**
+ * Which non-enumerated tiers proposed the hypotheses in an existing log.
+ *
+ * The counterpart to `sampledTiers` below, and it exists because the comparison
+ * needs the provenance of BOTH logs, not just the incoming one. The first
+ * version of this checked only the run being written, which left the same bug
+ * standing from the other side: a keyless run pointed at a model-proposed log
+ * compared its own enumerated decisions against a sampled session's, found a
+ * difference that was guaranteed, and reported the failure as a broken
+ * reproducibility guarantee. It also deleted that log on the way in, because
+ * `--replace` removes the file before the comparison is reached.
+ */
+function sampledTiersIn(path: string): string[] {
+  const tiers = new Set<string>();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const entry = JSON.parse(trimmed) as Record<string, unknown>;
+    const generator = entry['generator'];
+    if (typeof generator === 'string' && generator !== 'deterministic') tiers.add(generator);
+  }
+  return [...tiers];
+}
+
+/**
  * Compare a previous log's decisions against the run that just replaced it.
  *
  * Compares the common prefix, so a re-run with a different `--iterations` is
@@ -327,8 +351,12 @@ async function main(args: string[]): Promise<number> {
   }
 
   // Read the outgoing log's decisions BEFORE deleting it, so the run that
-  // replaces it can be held to reproducing them.
+  // replaces it can be held to reproducing them. Its PROVENANCE is read at the
+  // same moment and for the same reason: it is needed to decide whether holding
+  // the new run to reproducing it means anything, and after `rmSync` below the
+  // question can no longer be asked.
   const previousSubstance = existsSync(parsed.logPath) ? substance(parsed.logPath) : null;
+  const previousSampledTiers = existsSync(parsed.logPath) ? sampledTiersIn(parsed.logPath) : [];
 
   if (existsSync(parsed.logPath)) {
     if (!parsed.replace) {
@@ -508,7 +536,7 @@ async function main(args: string[]): Promise<number> {
   const sampledTiers = Object.keys(stats.generator_tiers).filter((tier) => tier !== 'deterministic');
   const enumeratedOnly = sampledTiers.length === 0;
 
-  if (previousSubstance !== null && enumeratedOnly) {
+  if (previousSubstance !== null && enumeratedOnly && previousSampledTiers.length === 0) {
     const difference = firstSubstantiveDifference(previousSubstance, substance(parsed.logPath));
     if (difference !== null) {
       process.stderr.write(
@@ -524,13 +552,30 @@ async function main(args: string[]): Promise<number> {
       `[run] PASS — reproduced all ${Math.min(previousSubstance.length, result.entriesChecked)} ` +
         'entries of the log it replaced: same hypotheses, same verdicts.',
     );
-  } else if (previousSubstance !== null) {
+  } else if (previousSubstance !== null && !enumeratedOnly) {
     console.log(
       `[run] NOTE — the reproducibility comparison was not applied: ${sampledTiers.join(', ')} ` +
         'proposed these hypotheses, and a sampled proposal is meant to differ between runs.\n' +
         '       This log is NOT reproducible, and says so rather than claiming otherwise. What\n' +
         '       is checkable is every verdict in it: the gate is a deterministic function of the\n' +
         '       hypothesis, the frozen dataset and the policy, all three hashed into each entry.',
+    );
+  } else if (previousSubstance !== null) {
+    /*
+     * The mirror image, and the case the condition above was missing. Every
+     * proposal in THIS run was enumerated — so this run is reproducible — but
+     * the log it replaced was not. Holding it to reproducing a sampled session
+     * would fail every time for a reason that says nothing about this run, and
+     * the failure would arrive after `--replace` had already deleted that log.
+     */
+    console.log(
+      '[run] NOTE — the reproducibility comparison was not applied: every proposal in this run ' +
+        `was enumerated, but the log it replaced was not — ${previousSampledTiers.join(', ')} ` +
+        'proposed those hypotheses.\n' +
+        '       A sampled proposal is meant to differ between runs, so the two logs cannot be\n' +
+        '       compared. This log IS reproducible: a second keyless run reproduces it exactly.\n' +
+        '       The record it replaced is the one that was not reproducible, and if it is worth\n' +
+        '       keeping it belongs in its own file rather than at the path this run replaced.',
     );
   }
 

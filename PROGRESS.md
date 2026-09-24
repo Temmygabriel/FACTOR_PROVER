@@ -40,6 +40,9 @@
 | **Deployed site vs. committed record** | **FIXED — the copy is scoped to the session. Finding 35, verified live.** |
 | README / demo-script numbers | **DONE — `README.md` written (it did not exist), `docs/DEMO_SCRIPT.md` written from the committed log. Finding 36.** |
 | **Agent Hub command vector** | **VERIFIED against the real CLI — it was wrong in 4 ways and had never been run. Findings 37–42.** |
+| **Model-proposed session** | **COMMITTED — `decisions-llm.jsonl`, 60 entries, every one `generator: groq`, head `07fa256b…`. Recovered from `b198c0c`, not regenerated.** |
+| **Both records verified in CI** | **Green — `decisions.jsonl` 201 entries `956d09b1…` PASS and `decisions-llm.jsonl` 60 entries `07fa256b…` PASS, on every push, Node 20 and 24.** |
+| **Proposer named in the UI** | **On `feat/llm-proposer-record` (PR #2), CI green, NOT MERGED — until it lands the deployed site still shows the old Evidence screen.** |
 
 **Backend is deployed and independently verified (2026-09-12).** Render created
 `factor-prover-agent` from the committed `render.yaml`; the deploy succeeded first try. The
@@ -1624,4 +1627,100 @@ that, and a test asserts it says it.
   declining to draw, because a judge may open the link from a phone before sitting down at a
   laptop. One table does not reflow — the stamp's four-column check grid scrolls inside its own
   box — and that is recorded in `apps/web/DESIGN.md` §10 rather than left for a reader to find.
+
+- **2026-09-24** — **Both sessions are now in the repository, and the proposer is named on
+  every entry.** The agentic-trading track claims the model proposes the hypothesis and the
+  deterministic gate adjudicates it. The record that existed on 09-23 supported only the second
+  half: all 201 entries of `apps/agent/logs/decisions.jsonl` carry `generator: deterministic`
+  (finding 48), so a judge who greps the log — which this project actively invites — found that
+  no model had proposed anything. The work below does not paper over that fact. It puts the
+  model-proposed session *beside* it, in its own file, and makes the UI say which one you are
+  reading.
+
+  **The model-proposed session was recovered from git history, not regenerated.** `b198c0c`
+  holds a 60-entry log whose every entry records `generator: groq`; `4fc8682` reverted that
+  path to the deterministic session, leaving the model run reachable only through git
+  archaeology. It was restored byte-exact to `apps/agent/logs/decisions-llm.jsonl` — blob
+  `38526632e11f94de494c0cdbbd3402cfb777add1`, verified identical to the original object — and
+  is session `S-6fae9ffa`, 2026-09-17T17:41:14Z → 18:06:55Z, 60 entries, 60 KILLs, head
+  `sha256:07fa256b7ee720f834299b394aca281c3f3cf96088988bc53b8f3dc5f1ac0054`.
+
+  It is a legitimate record rather than a recovered fragment, and that was established by three
+  independent checks rather than assumed: the three tree hashes (`policy_sha256`,
+  `partitions_sha256`, `dataset_sha256`) are byte-identical between the two logs, so both were
+  adjudicated against the same policy over the same frozen data; `config/` and
+  `apps/agent/data/frozen/` have not changed since 09-17; and every source diff since then is
+  additive or non-verdict-affecting. **It also proves the verifier still has teeth** — the same
+  check run over a byte-flipped copy reports `FAIL — 62 problem(s)` rather than passing.
+
+  | File | Entries | `generator` | Session |
+  |---|---|---|---|
+  | `apps/agent/logs/decisions.jsonl` | 201 | `deterministic` | `S-…`, 2026-09-13 — the session every document describes, holding the H-0006 promotion and demotion |
+  | `apps/agent/logs/decisions-llm.jsonl` | 60 | `groq` | `S-6fae9ffa`, 2026-09-17 — **every hypothesis proposed by a model** |
+
+  **Finding 49 — the demo-run workflow could destroy a record, or mislabel one.** Its output path
+  was hardcoded to `apps/agent/logs/decisions.jsonl`, which two earlier runs had already
+  overwritten (finding 43). Adding a second record made that worse rather than better: a run
+  with no provider key pointed at `decisions-llm.jsonl` would write a *deterministic* session
+  into a file whose name says a model proposed it — the filename describing the wrong document,
+  the same class of error as the artifact/experiment splice that took a whole session to
+  untangle. Both are now refused rather than warned about, by a step placed **before** the run
+  because the runner is invoked with `--replace`, which removes the file before the commit step
+  could have checked it. New `out` and `protect_artifact` inputs; the commit subject now reads
+  `demo run: model-proposed|deterministic session on the frozen dataset` and names the document,
+  so a run can no longer be mistaken for the other kind by its title alone.
+
+  **Finding 50 — the reproducibility comparison was one-sided, and failed with a false cause.**
+  `run-session.ts` holds a keyless run to reproducing the log it replaces. It checked only the
+  *incoming* run's provenance. So a keyless run over a model-proposed log compared its
+  enumerated decisions against a sampled session's, found a difference that was guaranteed to
+  exist, and reported it as *"something in the path from attempt index to decision is not a pure
+  function"* — a specific and entirely false accusation about the gate — then exited 1, **after
+  `--replace` had already deleted the log it was complaining about.** The outgoing log's
+  provenance is now read at the same moment as its decisions, before deletion, and a third
+  branch reports the mirror case in its own words. Proved with a negative control: the pre-edit
+  runner over that input exits 1 with the false message; the fixed one exits 0 with the correct
+  NOTE.
+
+  **Finding 51 — the deployed page named the configured tier next to a record no model
+  proposed.** The homepage reports the generator chain's `tiers_live`, which on the deployed
+  instance is `["groq"]`; the Evidence screen serves `decisions.jsonl`, which no model proposed.
+  Both statements were true and nothing joined them, so the two together read as "a model wrote
+  this" — the exact mislabeling the honesty rule forbids. `/api/log` now returns a `generators`
+  tally computed over the **whole file**, not over the page, and the log screen states who
+  proposed what it is showing. The whole-file scope is the point: a tally over one page would
+  let a reader conclude "this record was enumerated" from ten visible rows. An absent tally
+  renders nothing at all, because an older server means *unknown*, not *deterministic*.
+
+  **CI now verifies every committed record, not one named path.** `ci.yml` loops over
+  `apps/agent/logs/decisions*.jsonl` and fails on the first that does not verify. The summary
+  block had a latent `bash -e` bug — `[ "$found" -eq 0 ] && echo …` returns 1 when logs *do*
+  exist, failing the step in the ordinary case — now an `if`.
+
+  **All of this is on `feat/llm-proposer-record` (PR #2), CI green on Node 20 and 24, and NOT
+  YET MERGED.** Until it merges the deployed site still renders the old Evidence screen. CI
+  verifies both records independently on Linux — `decisions.jsonl` 201 entries head
+  `956d09b1…` PASS, `decisions-llm.jsonl` 60 entries head `07fa256b…` PASS — which is a
+  stronger check than any local run available here, since this machine has no `node_modules`
+  and therefore no `tsc`.
+
+  **What has not changed, and must not:** the committed deterministic session is still
+  described as deterministic, in the README, the demo script and the UI. Two files exist
+  precisely so that neither fact has to be hidden — the honest reading of the pair is that
+  **both sessions happened**, and the demo leads with the model-proposed one while showing the
+  deterministic session as the reproducibility floor. The model session produced 60 kills and
+  no promotion, so its execution leg has nothing to act on; that is stated in the demo rather
+  than glossed, and the accepted Agent Hub order is demonstrated on the 09-13 session where the
+  promotion lives.
+
+  **The demo script and its recording guide were moved out of the public repository.** They now
+  live in `demo-local/`, which is gitignored, together with the other submission material. Both
+  were previously published — the script was tracked at `docs/DEMO_SCRIPT.md` from the day it
+  was written and the guide sat at the repo root — and they are strategy documents, so they
+  belong with `SUBMISSION.md` rather than in the public tree. `README.md`'s directory listing
+  was corrected in the same commit, since it named the old path. **This does not unpublish the
+  earlier commits:** the script's older revisions remain in the repository's history and are
+  still readable at their commit SHAs, and removing them from history would mean rewriting
+  published commits, which has not been done. What the change does is keep the file out of a
+  fresh clone and out of the tip of every branch from here on.
 

@@ -221,7 +221,7 @@ apps/agent/          the loop: generation, backtest, gate, guard, log, REST + SS
 apps/agent/config/   gate_policy.json and partitions.json — the preregistered protocol
 apps/agent/logs/     decisions.jsonl — the hash-chained research record
 apps/web/            Next.js dashboard — leaderboard, decision log, live feed, provenance
-docs/                DATA_FINDINGS.md, DEMO_SCRIPT.md, TRY_IT.md
+docs/                DATA_FINDINGS.md, TRY_IT.md
 PROGRESS.md          the build record, including every finding and correction
 ```
 

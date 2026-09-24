@@ -626,14 +626,68 @@ export function killReasonTechnical(row: DecisionRow): string[] {
   ];
 }
 
+/**
+ * Who proposed the hypotheses in a record, said plainly.
+ *
+ * WHY THIS IS ON THE SCREEN AT ALL. `generator` is recorded on every entry, and
+ * until now it was only legible in the log table's rows and behind a technical
+ * disclosure — which means the product never actually said, in words, who wrote
+ * the hypotheses a reader was looking at. Meanwhile the pre-flight checklist
+ * reports the generator chain's LIVE tiers, which on the deployed instance is
+ * `groq`. Shown beside a record that no model proposed, that reads as a claim
+ * about the record. The tier that is CONFIGURED and the tier that PROPOSED what
+ * you are reading are two different facts, and this says the second one so the
+ * first cannot be mistaken for it.
+ *
+ * The tally comes from the server, computed over the whole file rather than the
+ * page in hand, so "every hypothesis in this record" is a statement about the
+ * record and not about the twenty-five rows that happen to be loaded.
+ *
+ * Returns null — not a hedge — when the server did not report a tally, which
+ * means an older backend. Saying nothing is the only honest option: there is no
+ * truthful sentence to write about a distribution nobody measured.
+ */
+export function proposerSentence(
+  generators: { tier: string; count: number }[] | undefined,
+): string | null {
+  if (!generators || generators.length === 0) return null;
+
+  const total = generators.reduce((sum, g) => sum + g.count, 0);
+  if (total === 0) return null;
+
+  const label = (tier: string) =>
+    tier === 'deterministic' ? 'the deterministic enumerator' : tier;
+
+  const enumerated = generators.filter((g) => g.tier === 'deterministic');
+  const sampled = generators.filter((g) => g.tier !== 'deterministic');
+
+  /*
+   * The all-enumerated case is the one worth its own sentence, because it is the
+   * one a reader is most likely to get wrong. "Deterministic" is not a lesser
+   * provenance here — it is the one that makes the session reproducible, and the
+   * sentence says so rather than leaving the word to read as a downgrade.
+   */
+  if (sampled.length === 0) {
+    return `Every hypothesis in this record was proposed by the deterministic enumerator, not by a model. It is a pure function of the attempt index, so re-running the protocol reproduces this record exactly.`;
+  }
+
+  if (enumerated.length === 0) {
+    const tiers = sampled.map((g) => label(g.tier)).join(' and ');
+    return `Every hypothesis in this record was proposed by a model (${tiers}), and every verdict on it was then decided by the gate. A sampled proposal differs between runs, so this session is not reproducible — what is checkable is that each judgment is re-derivable from the entry's own hashes.`;
+  }
+
+  const parts = generators
+    .map((g) => `${label(g.tier)} (${fmtInt(g.count)})`)
+    .join(' and ');
+  return `This record is mixed, and says so rather than picking one answer: ${parts}. A sampled proposal differs between runs and an enumerated one does not, so the session as a whole is not reproducible. Every verdict in it is still re-derivable from the entry it is recorded on.`;
+}
+
 /** The three numbers the nav counter and the orientation strip both show. */
 export interface SessionCounts {
   attempted: number;
   passed: number;
   killed: number;
-}
-
-/**
+}/**
  * The session's score, or null when the stats are not in hand yet.
  *
  * The word is "attempted", not "tested", and that is a correction rather than a
