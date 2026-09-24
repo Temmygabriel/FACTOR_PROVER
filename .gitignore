@@ -80,6 +80,11 @@ __pycache__/
 # so a `git add .` cannot publish them by accident.
 factor_prover_ui_redesign_brief.md
 factor_prover_ui_fix_exact.md
+# The v2 reconfiguration brief is the same class of file as the two above, and it
+# was left merely untracked until 2026-09-24 — at which point a `git add -A` did
+# try to publish its 3111 lines. The comment above describes exactly that
+# accident; this line is what makes the comment true.
+FACTOR_PROVER_UI_UX_RECONFIGURATION_v2.md
 
 # Submission notes are local-only: they carry strategy, gap analysis and the
 # pre-submission checklist. Not for the public repo.
@@ -92,3 +97,19 @@ LLM_ROLE.md
 PROJECT_DESCRIPTION.md
 TRACK_DECISION.md
 TURN_ON_LIVE_EXECUTION.md
+
+# demo-local/ — the demo video's script and recording recipe.
+#
+# Both were previously published: the script lived at docs/DEMO_SCRIPT.md and
+# was tracked from the day it was written, and the guide sat at the repo root.
+# They are strategy documents — they tell the presenter what to say and which
+# detail to cut under time pressure — so they belong with the other submission
+# material rather than in the public repository. The whole directory is ignored
+# rather than the two files, so anything else that lands in here stays local by
+# default instead of by remembering.
+#
+# NOTE: ignoring this now does not unpublish the earlier commits. The script's
+# older revisions remain in the repository's history and are still readable at
+# their commit SHAs; this stops it appearing in the working tree of a fresh
+# clone and in the tip of every branch from here on.
+demo-local/

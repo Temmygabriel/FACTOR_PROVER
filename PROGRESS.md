@@ -1713,3 +1713,14 @@ that, and a test asserts it says it.
   than glossed, and the accepted Agent Hub order is demonstrated on the 09-13 session where the
   promotion lives.
 
+  **The demo script and its recording guide were moved out of the public repository.** They now
+  live in `demo-local/`, which is gitignored, together with the other submission material. Both
+  were previously published — the script was tracked at `docs/DEMO_SCRIPT.md` from the day it
+  was written and the guide sat at the repo root — and they are strategy documents, so they
+  belong with `SUBMISSION.md` rather than in the public tree. `README.md`'s directory listing
+  was corrected in the same commit, since it named the old path. **This does not unpublish the
+  earlier commits:** the script's older revisions remain in the repository's history and are
+  still readable at their commit SHAs, and removing them from history would mean rewriting
+  published commits, which has not been done. What the change does is keep the file out of a
+  fresh clone and out of the tip of every branch from here on.
+
