@@ -2,9 +2,47 @@
 
 **This supersedes spec §16.** The spec's demo flow was written before the project had ever
 produced a session, and it describes three things that cannot happen in the committed run.
-The numbers below are not illustrative — every one of them is read from
-[`apps/agent/logs/decisions.jsonl`](../apps/agent/logs/decisions.jsonl), session
-`S-1a6c5d66`, and can be checked by anyone with the repository.
+The numbers below are not illustrative — every one of them is read from a committed decision
+log and can be checked by anyone with the repository.
+
+## The argument underneath the twelve steps
+
+The twelve steps are the recipe. The **seven beats** below are the argument, and they are what
+is being scored. If a step has to be cut on the day, cut one that carries no beat.
+
+| # | The beat | Carried by |
+|---|---|---|
+| 1 | Bitget's own market data, hashed and frozen | Step 1 |
+| 2 | **A model proposes a trading hypothesis** | Steps 2–3 |
+| 3 | The deterministic backtest | Step 4 |
+| 4 | The preregistered statistical gate decides | Steps 5–9 |
+| 5 | The execution and risk guard | Step 9 |
+| 6 | Bitget paper execution | Step 10 |
+| 7 | The tamper-evident record | Steps 11–12 |
+
+## Two records, and the one sentence that keeps them straight
+
+The repository holds **two** decision logs, and they are different documents:
+
+| File | Entries | `generator` | Session | What it evidences |
+|---|---|---|---|---|
+| [`decisions-llm.jsonl`](../apps/agent/logs/decisions-llm.jsonl) | 60 | `groq` | `S-6fae9ffa`, 2026-09-17 | Beat 2 — **every hypothesis proposed by a model** |
+| [`decisions.jsonl`](../apps/agent/logs/decisions.jsonl) | 201 | `deterministic` | `S-1a6c5d66`, 2026-09-13 | Beats 3–6 — where the promotion, the demotion and the executed order are |
+
+Both verify with the project's own verifier, and CI re-verifies both on every push.
+
+**Steps 4–12 below read `decisions.jsonl`,** because that is where the promotion, the demotion
+and the executed order live. The model's session produced **60 kills and zero promotions**, so
+it has nothing for the execution leg to act on — say that on camera rather than let a viewer
+assume the model's session placed the order.
+
+**The one sentence that must never be said:** do not call the deterministic session a
+language-model session, and never let a caption imply a model produced the H-0006 promotion or
+its demotion. The honest sentence is that **both sessions happened** — one protocol, run once
+with a model proposing and once with the model replaced by a pure function, which is what makes
+the protocol checkable rather than merely described.
+
+---
 
 ## Why §16 could not be recorded as written
 
@@ -69,25 +107,57 @@ Point at `locked_at` and at `max_forward_window_minutes: 120`.
 > on merit. We capped it and wrote down why."
 
 ```
-Step 3  (0:40–1:10)  The hypothesis the agent proposes
+Step 3  (0:40–1:15)  The hypothesis a model proposes
 ```
-Screen: the dashboard. The structured hypothesis JSON — signal, condition, target, direction,
-forward window.
+Screen A: the dashboard. The structured hypothesis JSON — signal, condition, target,
+direction, forward window.
 
 > "The agent proposes a structured hypothesis. It cannot write free text. It cannot invent a
 > signal — that's a closed list. It cannot set a threshold that isn't in the schema. If it
 > goes off-spec, schema validation rejects it before anything is tested."
 
+Screen B: [`apps/agent/logs/decisions-llm.jsonl`](../apps/agent/logs/decisions-llm.jsonl),
+first line, scrolled slowly along until `"generator":"groq"`. **This is beat 2, and it is the
+shot the track is scored on — do not cut it.** Optionally `Ctrl+F` for `"generator":"groq"` and
+let the editor show it matching all 60 lines.
+
+> "This is the record of a session where a model proposed every hypothesis — 60 entries, and
+> every one carries `generator: groq`. Groq wrote the question."
+
+Then the split, stated once and plainly:
+
+> "The model picks the question. It has no vote on the verdict. That's the whole design: a
+> model that could mark its own work would just tell us its ideas were good."
+
+**And the model's own record contains the proof.** Two of the sixty hypotheses it proposed were
+killed *by the multiple-testing correction* — the gate overruling the model on exactly the
+judgement a model cannot make about itself. The better of the two is `E-0046`: a BTC
+spot-return hypothesis into `RAMZNUSDT` with a raw p-value of **0.0095**, which looks like a
+finding to anyone reading it alone. The preregistered bar at rank 2 of 46 was **0.0043**, so it
+died. On screen: search `decisions-llm.jsonl` for `E-0046` and hover its `gate_detail`.
+
+> "0.0095 looks like a discovery. It isn't — test 46 ideas and a p-value that size is expected
+> by chance. The model proposed it, the model can't be trusted to judge it, and the gate
+> killed it. That's the layer doing its job on the model's own output."
+
 ```
-Step 4  (1:10–1:40)  The backtest on DISCOVERY
+Step 4  (1:15–1:45)  The backtest on DISCOVERY
 ```
-Screen: an entry from the decision log.
+**This step changes records, and the change is spoken aloud.** Steps 4–12 read
+`decisions.jsonl`, the 13 September session, because that is where the promotion, the demotion
+and the executed order are.
+
+Screen: an entry from the deterministic decision log.
+
+> "From here the walkthrough follows the other record — 201 entries, the same protocol, with
+> the model replaced by a pure function. That one is reproducible: run it again and you get the
+> same 201 lines. The model's session isn't, and that's the honest price of using a model."
 
 > "It's tested on DISCOVERY only — 15 June to 5 August, 36 trading days. The engine
 > hard-rejects any query outside that window. This is the only partition the agent can see."
 
 ```
-Step 5  (1:40–2:00)  KILL #1 — the signal is too weak
+Step 5  (1:45–2:05)  KILL #1 — the signal is too weak
 ```
 Screen: entry `E-0001`, `H-0001`. On screen, verbatim:
 
@@ -98,7 +168,7 @@ Screen: entry `E-0001`, `H-0001`. On screen, verbatim:
 > a slide. Killed is a result. This one is 73 of the 200."
 
 ```
-Step 6  (2:00–2:20)  KILL #2 — a different reason, and a more honest one
+Step 6  (2:05–2:25)  KILL #2 — a different reason, and a more honest one
 ```
 Screen: entry `E-0005`, `H-0005`.
 
@@ -110,7 +180,7 @@ Screen: entry `E-0005`, `H-0005`.
 > call it wrong. We only get to say we couldn't check. 29 hypotheses died this way."
 
 ```
-Step 7  (2:20–3:00)  The centrepiece — promoted, then demoted
+Step 7  (2:25–3:05)  The centrepiece — promoted, then demoted
 ```
 **This replaces §16's "show a PROMOTED hypothesis".** Screen: entries `E-0006` and `E-0008`,
 side by side.
@@ -140,7 +210,7 @@ Then scroll two entries down.
 > "200 hypotheses. Zero promoted. The one it briefly liked, it took back."
 
 ```
-Step 8  (3:00–3:20)  LOCKED_TEST is still sealed
+Step 8  (3:05–3:25)  LOCKED_TEST is still sealed
 ```
 **This replaces §16's "out-of-sample IC" beat.** Screen: `config/partitions.json`, the
 `LOCKED_TEST` block.
@@ -154,7 +224,7 @@ Step 8  (3:00–3:20)  LOCKED_TEST is still sealed
 > selection effect this partition exists to prevent. Sealed is the correct outcome."
 
 ```
-Step 9  (3:20–3:50)  The execution guard
+Step 9  (3:25–3:55)  The execution guard
 ```
 Screen: the guard module, then the test suite running.
 
@@ -168,7 +238,7 @@ Screen: the guard module, then the test suite running.
 > in the tests instead — including the case where it refuses."
 
 ```
-Step 10 (3:50–4:30)  The order that really was placed
+Step 10 (3:55–4:35)  The order that really was placed
 ```
 **This replaces §16's "paper order executing" — and it changed again on 2026-09-21, when the
 execution leg placed its first real order.** Screen: `apps/agent/logs/paper-live.jsonl`.
@@ -203,15 +273,22 @@ Then the part that matters most — say it plainly, do not bury it:
 > not to how we send the order, and there is no workaround on our side. We're telling you
 > that rather than showing you a different pair and hoping you don't ask."
 
-> "Nothing was promoted this session, so no order followed from a promotion. The order you
+> "Nothing finished promoted this session, so no order followed from a promotion. The order you
 > just saw is the execution path being proved on purpose, on an instrument the venue accepts."
+
+Then, because a viewer who watched step 3 will otherwise assume this order came out of the
+model's session — **name the session it did come from**:
+
+> "This is the deterministic session's execution leg. The model's sixty-hypothesis session
+> promoted nothing, so it had no order to place. That's a real limit of that run, not a detail
+> we're skipping."
 
 **Honesty note for the camera:** do not say "our agent traded" and do not say "execution
 works". Say exactly what happened: the plumbing is proven, the promoted instrument is refused
 by the venue, and that is disclosed here.
 
 ```
-Step 11 (4:10–4:40)  The hash chain
+Step 11 (4:35–5:05)  The hash chain
 ```
 Screen: `decisions.jsonl`, then run the verifier.
 
@@ -224,7 +301,7 @@ cd apps/agent && npm run verify-log
 > entries, chain intact."
 
 ```
-Step 12 (4:40–5:10)  The leaderboard, losers first
+Step 12 (5:05–5:35)  The leaderboard, losers first
 ```
 Screen: the leaderboard page.
 
@@ -251,6 +328,8 @@ From spec §17, with the two items that cannot be satisfied honestly:
 | `partitions.json` committed | ✅ |
 | `gate_policy.json` committed | ✅ |
 | `decisions.jsonl` committed | ✅ 201 entries |
+| `decisions-llm.jsonl` committed | ✅ 60 entries, every one `generator: groq` — the record that evidences the model-proposed beat |
+| Both records re-verified in CI | ✅ `decisions.jsonl` head `956d09b1…`, `decisions-llm.jsonl` head `07fa256b…` |
 | Hash chain verifies | ✅ |
 | Demo video 5–6 min, 12 steps | ⬜ to record |
 | Live URL accessible | ✅ |
@@ -258,6 +337,8 @@ From spec §17, with the two items that cannot be satisfied honestly:
 | rToken paper-trading limitation disclosed | ✅ README |
 | **At least one KILL and one PROMOTE visible** | ⚠️ **one KILL and one PROMOTE are both visible — as the same hypothesis, promoted then demoted (step 7). No hypothesis finished promoted.** |
 | **Null-result framing prepared** | ✅ this *is* the framing |
+| **The committed deterministic session is never called an LLM session** | ✅ stated in the header table, in step 4 and in step 10 of this script |
+| **The model-proposed session is shown, not just asserted** | ⬜ to record — step 3, screen B |
 
 The last two items in §17 contradict each other for this session: the checklist asks for a
 PROMOTE, and then anticipates zero promotions. The run produced zero. The checklist item is
