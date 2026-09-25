@@ -46,7 +46,7 @@ import { Button } from '@/components/Button';
 import { DecisionLog } from '@/components/DecisionLog';
 import { RecordExplainer } from '@/components/RecordExplainer';
 import { fmtClockUtc, fmtInt } from '@/lib/format';
-import { ApiFailure, getLog, isAborted, mayRenderAs, verifyChain } from '@/lib/api';
+import { ApiFailure, getLog, isAborted, mayRenderAs, recordsSelectable, verifyChain } from '@/lib/api';
 import { RECORD_COPY, proposerSentence } from '@/lib/copy';
 import type { DecisionRow, RecordId, VerifyResponse } from '@/lib/types';
 import { useNow, useResource } from '@/lib/useResource';
@@ -255,8 +255,12 @@ export default function LogPage() {
    * `log.data` still holds the previous record's answer, echo and all. Reading it
    * from `shown` would drop the selector out from under the reader mid-click,
    * since `shown` is null for exactly that moment.
+   *
+   * Three states, and the third is load-bearing: null means no answer yet, which
+   * is not "cannot select". See `recordsSelectable` in lib/api.ts — a cold start
+   * is ~50s of normal behaviour, and this screen is on display for all of it.
    */
-  const serverCanSelect = log.data?.record !== undefined;
+  const serverCanSelect = recordsSelectable(log.data);
 
   const [older, setOlder] = useState<DecisionRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);

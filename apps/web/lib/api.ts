@@ -270,6 +270,30 @@ export function mayRenderAs(
   return false;
 }
 
+/**
+ * Whether the deployment this client is talking to can select records — or null
+ * while that is not yet known.
+ *
+ * THREE STATES, NOT TWO, AND THE THIRD IS THE POINT. `data === null` means no
+ * answer has arrived. It does not mean the answer was no. A sleeping Render
+ * instance takes ~50s to answer and this screen renders throughout that wait, so
+ * a two-state version of this — `data?.record !== undefined` — puts "this
+ * deployment cannot select records" on screen for the whole of every cold start
+ * and then quietly withdraws it. That is the same mistake `useResource` exists to
+ * avoid for the read itself, in a different costume: a statement about the
+ * deployment, made before the deployment has been asked.
+ *
+ * Read against `data` rather than against the validated reading, because once any
+ * answer has carried the echo the deployment supports selection — including
+ * mid-switch, when `data` still holds the previous record's answer, echo and all.
+ * A failed read leaves this null and the control unrendered, which is correct:
+ * the page has already said, above, that it has not read the log.
+ */
+export function recordsSelectable(data: { record?: RecordId } | null): boolean | null {
+  if (data === null) return null;
+  return data.record !== undefined;
+}
+
 export const postPause = (signal?: AbortSignal) =>
   request<ControlResponse>('/api/stop', { method: 'POST', signal, timeoutMs: 20_000 });
 

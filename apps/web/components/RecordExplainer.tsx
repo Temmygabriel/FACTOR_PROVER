@@ -22,6 +22,15 @@
  * checked. The control is therefore not rendered at all, and the reason is
  * stated instead.
  *
+ * AND WHY THAT EXPLANATION IS NOT SHOWN WHILE THE READ IS OUTSTANDING. "No echo"
+ * and "no answer yet" are different facts, and only the first is about the
+ * deployment. This screen renders during a cold start, which on a sleeping
+ * free-tier instance is the better part of a minute, so a two-state version puts
+ * "This deployment cannot select records" in front of a reader for that whole
+ * wait and then withdraws it. Three states, then: the control, the explanation,
+ * or a line saying what is being waited for. See `recordsSelectable` in
+ * lib/api.ts, where that decision is a pure function with its own probe.
+ *
  * WHY THE WORKED EXAMPLE NEEDS THE MODEL RECORD SELECTED, AND COSTS NO REQUEST.
  * The example is derived from the rows in hand rather than fetched. That keeps
  * this section free — the page already makes its two calls, and a third poll
@@ -125,10 +134,12 @@ export function RecordExplainer({
   selected: RecordId;
   onSelect: (record: RecordId) => void;
   /**
-   * Whether the server reported which record it answered with. False means an
-   * instance older than record selection — see the header.
+   * Whether the server reported which record it answered with. `false` means an
+   * instance older than record selection — see the header. `null` means nothing
+   * has been read yet, which is NOT the same claim and must not be rendered as
+   * one: see `recordsSelectable` in lib/api.ts.
    */
-  serverCanSelect: boolean;
+  serverCanSelect: boolean | null;
   /** The rows of the SELECTED record that are in hand. */
   rows: DecisionRow[];
 }) {
@@ -152,7 +163,7 @@ export function RecordExplainer({
           the proposer sentence below describe that record only.
         </p>
 
-        {serverCanSelect ? (
+        {serverCanSelect === true ? (
           <div className="flex flex-wrap items-center gap-2">
             {RECORD_IDS.map((id) => (
               <Button
@@ -165,11 +176,23 @@ export function RecordExplainer({
               </Button>
             ))}
           </div>
-        ) : (
+        ) : serverCanSelect === false ? (
           <p className="max-w-[80ch] border border-rule bg-surface px-3 py-2 text-label text-ink-light">
             This deployment cannot select records: the API did not report which record it answered
             with, which is how an instance deployed before record selection behaves. It would answer
             the same record either way, so the control is withheld rather than shown and ignored.
+          </p>
+        ) : (
+          /*
+            Nothing read yet. An unrendered slot here would fill in a moment later
+            and read as a glitch; a spinner would hide the one thing worth
+            knowing, which is that the answer has not arrived. So it says that,
+            and says what it is waiting for.
+          */
+          <p className="max-w-[80ch] text-label text-ink-light" aria-live="polite">
+            Waiting for the API to report which record it answered with. The control appears once it
+            does — and does not appear if it never does, because a server that ignores the parameter
+            answers with the canonical record either way.
           </p>
         )}
 
