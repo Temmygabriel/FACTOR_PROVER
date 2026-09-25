@@ -1,0 +1,57 @@
+{
+  "artifact": "LOCKED_TEST out-of-sample pass",
+  "pass_id": "S-LOCKEDTEST-1",
+  "generated_at": "2026-09-25T18:38:43.285Z",
+  "carry_rule": "Every hypothesis for which the canonical research record (logs/decisions.jsonl) contains at least one entry with gate_decision === \"PROMOTE\", deduplicated by hypothesis_hash, ordered by the entry_id of its first promotion. Fixed before any LOCKED_TEST row was read. It is not \"the survivors\" — see the header.",
+  "canonical_record": {
+    "path": "apps/agent/logs/decisions.jsonl",
+    "entries": 201,
+    "head_hash": "sha256:956d09b18cf1cc102e0ca01dc8a2c24b72a9650918bcc35e9c1e681fa3e0a3e3"
+  },
+  "carry_set_size": 1,
+  "survivors_in_canonical_record": 0,
+  "provenance": {
+    "partition_used": "LOCKED_TEST",
+    "policy_version": "v1.0",
+    "policy_sha256": "sha256:2b49be0d6688f8588aa56b095ad399472cb7e1e533a9fd0301f71aca351d8e15",
+    "partitions_sha256": "sha256:a5edfbd0b6154f8e2e12f6f95970958fc2dd5ec321e3ae4389485bd1f150b7f5",
+    "dataset_sha256": "sha256:b0fd26a32fa0314debb6d2784d09c01904d5e173a73b77809cd50558bdf2f02b",
+    "fdr_level": 0.1
+  },
+  "results": [
+    {
+      "entry_id": "E-0001",
+      "hypothesis_id": "H-0006",
+      "hypothesis_hash": "sha256:e9d25703267518321c7ff5594f2b147791f8cb3d51d43427cf82a208f425599e",
+      "promoted_at_entry": "E-0006",
+      "canonical_final_verdict": {
+        "entry_id": "E-0008",
+        "decision": "KILL"
+      },
+      "signal_sources": {
+        "signal": "frozen",
+        "spot": null
+      },
+      "grid_size": 626,
+      "ic": 0.03343346416076646,
+      "t_stat": 0.5362790132206365,
+      "hit_rate": 0.5444015444015444,
+      "n_obs": 259,
+      "baseline_ic": 0.21790416645855368,
+      "raw_p_value": 0.5922296016812296,
+      "bh_adjusted_threshold": 0.1,
+      "decision": "KILL",
+      "reason": "ic_below_floor",
+      "detail": "|IC| = 0.0334 is below the preregistered floor of 0.04. Any relationship present is too weak to be worth trading.",
+      "checks": {
+        "passed_min_obs": true,
+        "passed_ic_floor": false,
+        "passed_t_stat_floor": false,
+        "passed_baseline_beat": false,
+        "passed_bh": false
+      },
+      "bh_rank": 1,
+      "bh_family_size": 1
+    }
+  ]
+}
