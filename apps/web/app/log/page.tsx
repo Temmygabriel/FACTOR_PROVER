@@ -28,16 +28,27 @@
  * Pagination is by the API's own `next_cursor`, and pages accumulate rather than
  * replace so that a poll refreshing the newest page cannot erase the older
  * entries a reader has already loaded.
+ *
+ * TWO RECORDS, AND THE RULE THAT KEEPS THEM APART. There is a canonical record,
+ * in which no model proposed anything, and a model-proposed one. `?record=`
+ * selects between them and the response echoes back which one it answered with.
+ * An ABSENT echo is not "the same as what I asked for" — it means the server is
+ * older than record selection and ignored the parameter, so on a request for the
+ * model's record it would return the canonical rows under a heading claiming
+ * they are the model's. Every read on this page is therefore gated on `shown`,
+ * and the selector is withheld entirely when no echo ever arrives. The one
+ * exception, and why it is not a hole, is argued on `mayRenderAs` in lib/api.ts.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BackendNotice, StaleNotice } from '@/components/BackendNotice';
 import { Button } from '@/components/Button';
 import { DecisionLog } from '@/components/DecisionLog';
+import { RecordExplainer } from '@/components/RecordExplainer';
 import { fmtClockUtc, fmtInt } from '@/lib/format';
-import { ApiFailure, getLog, isAborted, verifyChain } from '@/lib/api';
-import { proposerSentence } from '@/lib/copy';
-import type { DecisionRow, VerifyResponse } from '@/lib/types';
+import { ApiFailure, getLog, isAborted, mayRenderAs, recordsSelectable, verifyChain } from '@/lib/api';
+import { RECORD_COPY, proposerSentence } from '@/lib/copy';
+import type { DecisionRow, RecordId, VerifyResponse } from '@/lib/types';
 import { useNow, useResource } from '@/lib/useResource';
 
 /** Entries per page request. */
@@ -208,41 +219,114 @@ function ChainIntegrityBanner({ verify }: { verify: VerifyState }) {
 }
 
 export default function LogPage() {
-  const log = useResource((signal) => getLog({ limit: PAGE_SIZE }, signal), {
+  /**
+   * Which committed record this screen is reading.
+   *
+   * `reloadOn` re-runs the read when this changes, but it does NOT clear `data`:
+   * for as long as the new read is in flight, `log.data` still holds the previous
+   * record's rows. Falling through to those would put the canonical record under
+   * a heading saying it is the model's — precisely the mislabelling record
+   * selection was added to prevent. So nothing below reads `log.data` to decide
+   * what to show. Everything goes through `shown`.
+   */
+  const [record, setRecord] = useState<RecordId>('committed');
+
+  const log = useResource((signal) => getLog({ limit: PAGE_SIZE, record }, signal), {
     intervalMs: 30_000,
+    reloadOn: record,
   });
+
+  /**
+   * The rows on screen, or null while the reading in hand belongs to another
+   * record. Null is a state the page renders — "Reading the log…" — not a state
+   * it papers over with the last answer.
+   *
+   * The decision is `mayRenderAs` in lib/api.ts: a pure function with its own
+   * probe, because it is the single line between a reader and a record labelled
+   * as something it is not, and a rule that load-bearing should not have to be
+   * read out of a component to be checked.
+   */
+  const shown = mayRenderAs(record, log.data) ? log.data : null;
+
+  /*
+   * Whether this deployment can select records at all — tested against
+   * `log.data` rather than `shown`. Once any answer has carried the echo the
+   * deployment supports selection, including while a switch is in flight, when
+   * `log.data` still holds the previous record's answer, echo and all. Reading it
+   * from `shown` would drop the selector out from under the reader mid-click,
+   * since `shown` is null for exactly that moment.
+   *
+   * Three states, and the third is load-bearing: null means no answer yet, which
+   * is not "cannot select". See `recordsSelectable` in lib/api.ts — a cold start
+   * is ~50s of normal behaviour, and this screen is on display for all of it.
+   */
+  const serverCanSelect = recordsSelectable(log.data);
 
   const [older, setOlder] = useState<DecisionRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Starts at `running`, not `idle`: the check runs on mount, so "not yet
-  // started in this session" is not a state any reader can be shown.
-  const [verify, setVerify] = useState<VerifyState>({ status: 'running' });
+
+  /**
+   * The chain verdict, held WITH the record it is a verdict on.
+   *
+   * Switching records starts a new check, but the previous check's answer can
+   * still be in flight. Keeping the record alongside the state means a late
+   * answer is only ever rendered against the record it describes; a verdict for
+   * the other record cannot be shown as this one's.
+   */
+  const [verify, setVerify] = useState<{ record: RecordId; state: VerifyState }>({
+    record: 'committed',
+    state: { status: 'running' },
+  });
+
   const now = useNow();
 
-  const firstPage = useMemo(() => log.data?.entries ?? [], [log.data]);
-
-  const proposer = useMemo(() => proposerSentence(log.data?.generators), [log.data]);
-
+  /**
+   * The rows on screen: the reading's own page, plus any older pages loaded, and
+   * NOTHING when there is no valid reading.
+   *
+   * The empty case is the point. `older` is cleared by an effect, and an effect
+   * runs after the render that changed `record` — so for one commit, `older`
+   * still holds the other record's rows while `shown` is already null. Falling
+   * through to it would hand the record explainer a set of canonical rows to
+   * search for "the closest the model came", and it would find one: a
+   * deterministic entry rendered under a heading about the model. Deriving the
+   * whole list from `shown` makes that unrepresentable rather than unlikely.
+   */
   const entries = useMemo(() => {
-    if (older.length === 0) return firstPage;
-    const seen = new Set(firstPage.map((row) => row.entry_id));
-    return [...firstPage, ...older.filter((row) => !seen.has(row.entry_id))];
-  }, [firstPage, older]);
+    if (!shown) return [];
+    if (older.length === 0) return shown.entries;
+    const seen = new Set(shown.entries.map((row) => row.entry_id));
+    return [...shown.entries, ...older.filter((row) => !seen.has(row.entry_id))];
+  }, [shown, older]);
+
+  const proposer = useMemo(() => proposerSentence(shown?.generators), [shown]);
+
+  /*
+   * A cursor belongs to its record. Both files number their entries densely from
+   * E-0001, so an id carried across a switch points at an unrelated row — E-0006
+   * is the PROMOTE in one record and a KILL in the other. Cleared on every
+   * change, before the new reading lands.
+   */
+  useEffect(() => {
+    setOlder([]);
+    setCursor(null);
+    setLoadError(null);
+  }, [record]);
 
   // The cursor to continue from: the accumulated tail if pages were loaded,
   // otherwise the first page's cursor.
-  const nextCursor = cursor ?? log.data?.next_cursor ?? null;
-  const hasMore = older.length > 0 ? cursor !== null : (log.data?.next_cursor ?? null) !== null;
+  const nextCursor = cursor ?? shown?.next_cursor ?? null;
+  const hasMore = older.length > 0 ? cursor !== null : (shown?.next_cursor ?? null) !== null;
 
   async function loadOlder() {
     setLoadingOlder(true);
     setLoadError(null);
     try {
-      const from = older.length > 0 ? cursor : (log.data?.next_cursor ?? null);
+      const from = older.length > 0 ? cursor : (shown?.next_cursor ?? null);
       if (!from) return;
-      const page = await getLog({ limit: PAGE_SIZE, before: from });
+      const page = await getLog({ limit: PAGE_SIZE, before: from, record });
       setOlder((previous) => [...previous, ...page.entries]);
       setCursor(page.next_cursor);
     } catch (error) {
@@ -256,29 +340,35 @@ export default function LogPage() {
     }
   }
 
-  const runVerify = useCallback(async (signal?: AbortSignal) => {
-    setVerify({ status: 'running' });
-    try {
-      const result = await verifyChain(signal);
-      setVerify({ status: 'done', result, verifiedAt: new Date().toISOString() });
-    } catch (error) {
-      // An unmount aborts the request; there is no reader left to report to.
-      if (error instanceof ApiFailure && isAborted(error)) return;
-      // ApiFailure composes the spec's error copy from the method, the path and
-      // the status — "GET /api/log/verify returned HTTP 503". Reported as it
-      // arrived rather than as "something went wrong".
-      const headline =
-        error instanceof ApiFailure
-          ? error.headline
-          : error instanceof Error
-            ? error.message
-            : 'the verification request did not complete';
-      setVerify({
-        status: 'failed',
-        message: headline.endsWith('.') ? headline : `${headline}.`,
-      });
-    }
-  }, []);
+  const runVerify = useCallback(
+    async (signal?: AbortSignal) => {
+      setVerify({ record, state: { status: 'running' } });
+      try {
+        const result = await verifyChain(record, signal);
+        setVerify({
+          record,
+          state: { status: 'done', result, verifiedAt: new Date().toISOString() },
+        });
+      } catch (error) {
+        // An unmount aborts the request; there is no reader left to report to.
+        if (error instanceof ApiFailure && isAborted(error)) return;
+        // ApiFailure composes the spec's error copy from the method, the path and
+        // the status — "GET /api/log/verify returned HTTP 503". Reported as it
+        // arrived rather than as "something went wrong".
+        const headline =
+          error instanceof ApiFailure
+            ? error.headline
+            : error instanceof Error
+              ? error.message
+              : 'the verification request did not complete';
+        setVerify({
+          record,
+          state: { status: 'failed', message: headline.endsWith('.') ? headline : `${headline}.` },
+        });
+      }
+    },
+    [record],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -286,15 +376,56 @@ export default function LogPage() {
     return () => controller.abort();
   }, [runVerify]);
 
+  /*
+   * A verdict for the other record is not a verdict on this one. While the check
+   * for the selected record is outstanding, "running" is the only thing that can
+   * honestly be shown — see the verify state's comment above.
+   */
+  const activeVerify: VerifyState =
+    verify.record === record ? verify.state : { status: 'running' };
+
+  /*
+   * The path of the record on screen, taken from the check's own answer rather
+   * than from a table of filenames kept here. `/api/log/verify` reports
+   * `log_path` per record, so a reader can go from this page to the file in the
+   * repository without the page having to know, and keep in step with, what the
+   * files are called.
+   */
+  const recordPath = activeVerify.status === 'done' ? activeVerify.result.log_path : null;
+
   return (
     <div className="flex flex-col gap-6">
-      <ChainIntegrityBanner verify={verify} />
+      <ChainIntegrityBanner verify={activeVerify} />
+
+      {/*
+        Sits between the chain verdict and the record it is a verdict on, which
+        is the one place a reader is certain to pass. See the component header for
+        why the selector is withheld rather than disabled when the server cannot
+        select, and why the worked example is derived from the rows in hand.
+      */}
+      <RecordExplainer
+        selected={record}
+        onSelect={setRecord}
+        serverCanSelect={serverCanSelect}
+        rows={entries}
+      />
 
       <section className="border-b border-rule pb-4">
         <h1 className="text-heading font-semibold text-ink">Decision log</h1>
+        {/*
+          Which record, in the record's own name, directly under the heading — the
+          explanation above scrolls away, and the table below is fifteen screens
+          of rows that would otherwise be unlabelled. The file path is appended
+          only once the chain check has reported it, so it is the endpoint's path
+          for this record rather than a filename typed here.
+        */}
+        <p className="mt-1 font-mono text-caption text-ink-light">
+          {RECORD_COPY[record].title}
+          {recordPath ? ` · ${recordPath}` : ''}
+        </p>
         <p className="mt-1 text-label text-ink-light">
-          {log.data
-            ? `${fmtInt(log.data.total)} entries · each entry hashes the one before it, so altering or removing a line breaks every hash after it.`
+          {shown
+            ? `${fmtInt(shown.total)} entries · each entry hashes the one before it, so altering or removing a line breaks every hash after it.`
             : 'the entry count is not available yet'}
         </p>
         {/*
@@ -311,7 +442,7 @@ export default function LogPage() {
         ) : null}
       </section>
 
-      {log.stale ? (
+      {log.stale && shown ? (
         <StaleNotice failure={log.failure} readAt={log.readAt} onRetry={log.reload} />
       ) : null}
 
@@ -319,7 +450,7 @@ export default function LogPage() {
         <p className="border border-rule bg-surface px-4 py-2 text-label text-ink">{loadError}</p>
       ) : null}
 
-      {log.data ? (
+      {shown ? (
         <DecisionLog
           entries={entries}
           now={now}
@@ -329,13 +460,16 @@ export default function LogPage() {
           onLoadOlder={loadOlder}
           meta={
             <span>
-              {entries.length} of {fmtInt(log.data.total)}
+              {entries.length} of {fmtInt(shown.total)}
               {nextCursor ? ` · cursor ${nextCursor.slice(0, 12)}` : ''}
             </span>
           }
           actions={
-            <Button onClick={() => void runVerify()} disabled={verify.status === 'running'}>
-              {verify.status === 'running' ? 'Verifying…' : 'Verify chain'}
+            <Button
+              onClick={() => void runVerify()}
+              disabled={activeVerify.status === 'running'}
+            >
+              {activeVerify.status === 'running' ? 'Verifying…' : 'Verify chain'}
             </Button>
           }
           footnote="Hover a hash to see the full digest; entry ids and both hashes are shown so the chain is readable without documentation. A demotion is appended as a new entry — nothing in this file is ever edited."

@@ -21,6 +21,7 @@ import type {
   ControlResponse,
   LeaderboardResponse,
   LogResponse,
+  RecordId,
   StatusResponse,
   VerifyResponse,
 } from './types';
@@ -191,20 +192,31 @@ export const getStatus = (signal?: AbortSignal) =>
 export const getLeaderboard = (signal?: AbortSignal) =>
   request<LeaderboardResponse>('/api/leaderboard', { signal });
 
-/** Newest first. `before` is the previous response's `next_cursor`. */
+/**
+ * Newest first. `before` is the previous response's `next_cursor`.
+ *
+ * `record` picks WHICH committed record. Note that `before` is only meaningful
+ * within one record: ids are dense per file and collide across the two, so a
+ * cursor carried over from the other record lands somewhere unrelated. Callers
+ * that offer a record selector must drop the cursor when it changes.
+ */
 export const getLog = (
-  params: { limit?: number; before?: string | null } = {},
+  params: { limit?: number; before?: string | null; record?: RecordId } = {},
   signal?: AbortSignal,
 ) => {
   const query = new URLSearchParams();
   if (params.limit !== undefined) query.set('limit', String(params.limit));
   if (params.before) query.set('before', params.before);
+  if (params.record) query.set('record', params.record);
   const suffix = query.toString();
   return request<LogResponse>(`/api/log${suffix ? `?${suffix}` : ''}`, { signal });
 };
 
-export const verifyChain = (signal?: AbortSignal) =>
-  request<VerifyResponse>('/api/log/verify', { signal });
+export const verifyChain = (record?: RecordId, signal?: AbortSignal) =>
+  request<VerifyResponse>(
+    record ? `/api/log/verify?record=${record}` : '/api/log/verify',
+    { signal },
+  );
 
 /**
  * The one write this app performs. `requested_by` is required by the contract
@@ -220,6 +232,67 @@ export const postReset = (requestedBy: string, signal?: AbortSignal) =>
     // would be worse than an error they can retry.
     timeoutMs: 20_000,
   });
+
+/**
+ * Whether a response may be RENDERED AS the record that was requested.
+ *
+ * This is a pure function rather than two lines inside the log screen because it
+ * is the only thing standing between a reader and a mislabelled record, and a
+ * rule that important should be testable without rendering a page.
+ *
+ * THE CASE IT EXISTS FOR. `LogResponse.record` is an echo. A server deployed
+ * before record selection existed ignores `?record=llm` and answers with the
+ * canonical record: HTTP 200, a full page of entirely true rows, and no echo.
+ * Every field in that response is correct — only the question it answers is not
+ * the question that was asked. Rendered, it puts the canonical record under a
+ * heading saying it is the model's, and the page looks like it checked. So the
+ * absence of an echo is NOT read as "same as what I asked for".
+ *
+ * THE EXCEPTION, AND WHY IT IS NOT A HOLE. There is exactly one case where a
+ * response with no echo provably IS the record that was asked for: an old server
+ * always answers with the canonical record, so if the canonical record was asked
+ * for, the answer is it. Refusing that case would take the live evidence screen
+ * blank for as long as it takes the API to redeploy — the two services deploy
+ * separately, and the web side normally lands first — which trades a real,
+ * certain outage for a hypothetical mislabel that cannot occur: with no echo the
+ * selector is not rendered, so nothing can request the model's record.
+ *
+ * `null` response (nothing read yet, or the read failed) renders nothing.
+ */
+export function mayRenderAs(
+  requested: RecordId,
+  response: { record?: RecordId } | null,
+): boolean {
+  if (!response) return false;
+  const echoed = response.record;
+  if (echoed === requested) return true;
+  if (echoed === undefined && requested === 'committed') return true;
+  return false;
+}
+
+/**
+ * Whether the deployment this client is talking to can select records — or null
+ * while that is not yet known.
+ *
+ * THREE STATES, NOT TWO, AND THE THIRD IS THE POINT. `data === null` means no
+ * answer has arrived. It does not mean the answer was no. A sleeping Render
+ * instance takes ~50s to answer and this screen renders throughout that wait, so
+ * a two-state version of this — `data?.record !== undefined` — puts "this
+ * deployment cannot select records" on screen for the whole of every cold start
+ * and then quietly withdraws it. That is the same mistake `useResource` exists to
+ * avoid for the read itself, in a different costume: a statement about the
+ * deployment, made before the deployment has been asked.
+ *
+ * Read against `data` rather than against the validated reading, because once any
+ * answer has carried the echo the deployment supports selection — including
+ * mid-switch, when `data` still holds the previous record's answer, echo and all.
+ * A failed read leaves this null and the control unrendered, which is correct:
+ * the page has already said, above, that it has not read the log.
+ */
+export function recordsSelectable(data: { record?: RecordId } | null): boolean | null {
+  if (data === null) return null;
+  return data.record !== undefined;
+}
 
 export const postPause = (signal?: AbortSignal) =>
   request<ControlResponse>('/api/stop', { method: 'POST', signal, timeoutMs: 20_000 });
