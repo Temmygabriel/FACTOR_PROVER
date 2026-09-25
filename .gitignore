@@ -98,6 +98,13 @@ PROJECT_DESCRIPTION.md
 TRACK_DECISION.md
 TURN_ON_LIVE_EXECUTION.md
 
+# Handover notes on the Bitget GetAgent / Agent Hub / paper-trading side,
+# written 2026-09-24 for a second model to read. Same class as SUBMISSION.md:
+# it is a briefing about the project, not an artefact of it. It also quotes the
+# demo order ids and the exact refusal text, and restates the gap analysis —
+# none of which belongs in front of a judge as project documentation.
+HANDOVER_GETAGENT.md
+
 # demo-local/ — the demo video's script and recording recipe.
 #
 # Both were previously published: the script lived at docs/DEMO_SCRIPT.md and
