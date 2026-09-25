@@ -39,7 +39,13 @@ import { pathToFileURL } from 'node:url';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 
-import type { ApiError, ControlResponse, LogResponse, VerifyResponse } from './api/contract.js';
+import type {
+  ApiError,
+  ControlResponse,
+  LogResponse,
+  RecordId,
+  VerifyResponse,
+} from './api/contract.js';
 import { redactSecrets } from './api/redact.js';
 import { verifyDecisionLog } from './log/verify.js';
 import { SessionLoop, type SessionLoopOptions } from './session/loop.js';
@@ -134,6 +140,51 @@ function parseLimit(raw: unknown, fallback: number, max: number): number | null 
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 1 || n > max) return null;
   return n;
+}
+
+/**
+ * Read `?record=` — which committed record the caller is asking about.
+ *
+ * Absent means the canonical record, which is what every caller before this
+ * parameter existed meant and what a shared link should keep landing on.
+ *
+ * An UNRECOGNISED value is an error rather than a fallback to the default, and
+ * that is the whole reason this is a function instead of a `??`. Defaulting on a
+ * typo would answer `?record=lmm` with the deterministic record and a 200 — a
+ * page of true rows that the caller has every reason to believe is the model's,
+ * which is the exact mislabelling this parameter was added to end. Refusing
+ * costs a caller one error message and tells them the valid values.
+ */
+function parseRecord(raw: unknown): RecordId | null {
+  if (raw === undefined || raw === '') return 'committed';
+  if (typeof raw !== 'string') return null;
+  return raw === 'committed' || raw === 'llm' ? raw : null;
+}
+
+/**
+ * The command that reproduces THIS verification from a checkout.
+ *
+ * IT HAS TO NAME THE FILE, and getting that wrong is the same failure the
+ * `record` echo exists to prevent, one step further along. `npm run verify-log`
+ * is bound in package.json to `tsx src/log/verify.ts --file
+ * logs/decisions.jsonl`. Serving that string beside the MODEL record would tell
+ * a reader "here is how to check me", and running it would verify the canonical
+ * file instead — 201 entries, a different head hash, and a perfectly green
+ * chain over bytes they are not looking at. A verification of the wrong file is
+ * worse than no verification offered, because it comes with a result.
+ *
+ * The appended-override form does not work either: `verify.ts` documents that
+ * `npm run verify-log -- --file X` does not take effect, because the script
+ * already passes its own `--file`. So the model record gets the direct `npx`
+ * invocation instead, which does.
+ *
+ * The canonical record keeps the short npm form, because that script already
+ * points at it — the command a reader copies should be the one the repository
+ * documents.
+ */
+function reproduceCommand(record: RecordId, logPath: string): string {
+  if (record === 'committed') return 'npm run verify-log --workspace apps/agent';
+  return `npx tsx src/log/verify.ts --file ${logPath}`;
 }
 
 /**
@@ -236,8 +287,22 @@ export function createApp(loop: SessionLoop) {
       if (beforeRaw !== undefined && typeof beforeRaw !== 'string') {
         return fail(res, 400, 'invalid_query', 'before must be a single entry_id string');
       }
+      const record = parseRecord(req.query['record']);
+      if (record === null) {
+        return fail(
+          res,
+          400,
+          'invalid_query',
+          "record must be 'committed' (the canonical research record) or 'llm' (the " +
+            "model-proposed calibration record)",
+        );
+      }
 
-      const page: LogResponse = loop.getCommittedLog({ limit, before: beforeRaw ?? null });
+      const page: LogResponse = loop.getCommittedLog({
+        limit,
+        before: beforeRaw ?? null,
+        record,
+      });
       // A cursor that matches nothing yields an empty page with a null cursor
       // rather than an error: it means the caller has paged past the end, which
       // is the expected end of iteration, not a fault.
@@ -251,25 +316,44 @@ export function createApp(loop: SessionLoop) {
   // unauthenticated endpoint that does that per request is a mild amplification
   // vector; ten seconds means a judge refreshing the page costs one hash, and
   // costs nothing in freshness because the log only grows during a session.
+  //
+  // Keyed by RECORD, not one slot. A single slot would be worse than a miss: a
+  // request for the model record would evict the canonical one's answer and
+  // serve its own in its place, so a reader toggling between the two records
+  // would eventually be shown a green "chain intact" computed over the file they
+  // are not looking at. Two records means two entries.
   const VERIFY_TTL_MS = 10_000;
-  let verifyCache: { at: number; value: VerifyResponse } | null = null;
+  const verifyCache = new Map<RecordId, { at: number; value: VerifyResponse }>();
 
   app.get(
     '/api/log/verify',
-    wrap((_req, res) => {
+    wrap((req, res) => {
+      const record = parseRecord(req.query['record']);
+      if (record === null) {
+        return fail(
+          res,
+          400,
+          'invalid_query',
+          "record must be 'committed' (the canonical research record) or 'llm' (the " +
+            "model-proposed calibration record)",
+        );
+      }
+
+      const logPath = loop.recordPath(record);
       const now = Date.now();
-      if (verifyCache !== null && now - verifyCache.at < VERIFY_TTL_MS) {
-        return void res.json(verifyCache.value);
+      const cached = verifyCache.get(record);
+      if (cached !== undefined && now - cached.at < VERIFY_TTL_MS) {
+        return void res.json(cached.value);
       }
 
       const base = {
-        log_path: loop.committedLogPath,
-        reproduce: 'npm run verify-log --workspace apps/agent',
+        log_path: logPath,
+        reproduce: reproduceCommand(record, logPath),
       };
 
       let body: VerifyResponse;
       try {
-        const result = verifyDecisionLog(loop.committedLogPath);
+        const result = verifyDecisionLog(logPath);
         body = {
           ...base,
           ok: result.ok,
@@ -299,7 +383,7 @@ export function createApp(loop: SessionLoop) {
         const code = (err as { code?: unknown } | null)?.code;
         const reason =
           code === 'ENOENT'
-            ? `no decision log at ${loop.committedLogPath} yet — no session has recorded an entry`
+            ? `no decision log at ${logPath} yet — no session has recorded an entry`
             : 'the decision log exists but could not be read';
         console.error('[api] log verification could not read the log:', redactSecrets(String(err)));
         body = {
@@ -312,7 +396,7 @@ export function createApp(loop: SessionLoop) {
         };
       }
 
-      verifyCache = { at: now, value: body };
+      verifyCache.set(record, { at: now, value: body });
       res.json(body);
     }),
   );
@@ -443,7 +527,13 @@ function main(): void {
   // the file really was that long. The fault was that the file was two sessions.
   const committedLogPath = envOr('DECISION_LOG_PATH') ?? 'logs/decisions.jsonl';
   const sessionLogPath = envOr('SESSION_LOG_PATH') ?? 'logs/live-session.jsonl';
+  // The model-proposed session, served read-only beside the canonical record.
+  // Declared here rather than left to the loop's own default so the startup line
+  // below can name it: which two files this service is serving is exactly the
+  // fact a reader of the deployed instance cannot otherwise check.
+  const modelLogPath = envOr('MODEL_LOG_PATH') ?? 'logs/decisions-llm.jsonl';
   loopOptions.committedLogPath = committedLogPath;
+  loopOptions.modelLogPath = modelLogPath;
   loopOptions.logPath = sessionLogPath;
 
   // A fresh chain per boot. If removal fails the session still runs — it would
@@ -462,6 +552,7 @@ function main(): void {
 
   console.log(
     `[api] logs: serving the committed record at ${committedLogPath}, ` +
+      `the model-proposed record at ${modelLogPath}, ` +
       `recording this session at ${sessionLogPath}`,
   );
   console.log(

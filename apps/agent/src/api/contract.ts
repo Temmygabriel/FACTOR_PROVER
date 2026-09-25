@@ -220,6 +220,23 @@ export interface LeaderboardResponse {
 // GET /api/log
 // ---------------------------------------------------------------------------
 
+/**
+ * Which committed record a request is about.
+ *
+ * THERE ARE TWO RECORDS, AND THEY ARE DIFFERENT DOCUMENTS. `committed` is the
+ * canonical research record — the 2026-09-13 session whose 201 entries were all
+ * proposed by the deterministic enumerator, and the one every other document in
+ * this repository describes. `llm` is the model-proposed calibration record —
+ * the 2026-09-17 session whose 60 entries were every one proposed by Groq.
+ *
+ * Both are committed, both verify, and `generator` on each entry says which is
+ * which. The reason this is a parameter rather than one merged file is that one
+ * file cannot hold both facts: merging them would mean either the model
+ * proposed nothing in the record that exists, or the deterministic session —
+ * with the promotion and demotion the project's evidence rests on — is gone.
+ */
+export type RecordId = 'committed' | 'llm';
+
 export interface LogResponse {
   entries: DecisionRow[];
   total: number;
@@ -244,6 +261,26 @@ export interface LogResponse {
    * degrades to "unknown" rather than to a wrong answer.
    */
   generators?: { tier: string; count: number }[];
+
+  /**
+   * The record these entries were read from — an echo of the request.
+   *
+   * WHY AN ECHO IS NOT REDUNDANT HERE, and why the usual "an optional field
+   * means unknown, so say nothing" rule INVERTS for this one field. Every other
+   * optional field in this contract is absent when the server has nothing to
+   * say, and the UI correctly falls silent. This one is absent when the server
+   * did not UNDERSTAND the question — an instance deployed before record
+   * selection existed ignores `?record=llm` and answers with the committed
+   * record, which is a 200 and a page of true rows.
+   *
+   * A client that trusted that response would render the deterministic record
+   * under a heading claiming it was the model-proposed one. That is precisely
+   * the mislabelling this whole parameter exists to prevent, arrived at by the
+   * back door. So the client must treat an ABSENT `record` as "this server
+   * cannot select records" and decline to render a selection, never as "same as
+   * what I asked for".
+   */
+  record?: RecordId;
 }
 
 // ---------------------------------------------------------------------------

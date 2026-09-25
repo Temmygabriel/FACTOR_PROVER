@@ -105,6 +105,7 @@ import type {
   LogResponse,
   PromotedFactor,
   Provenance,
+  RecordId,
   SessionPhase,
   SessionStats,
   StatusResponse,
@@ -145,6 +146,27 @@ export interface SessionLoopOptions {
    * (`run-session.ts`, the tests) is unaffected and keeps one file one session.
    */
   committedLogPath?: string;
+  /**
+   * The MODEL-PROPOSED record, served read-only beside the canonical one.
+   *
+   * WHY THERE ARE TWO COMMITTED RECORDS AT ALL. The track this project enters
+   * asks for an agent that proposes its own hypotheses. The canonical record's
+   * 201 entries were every one proposed by the deterministic enumerator,
+   * because that session ran with no provider key configured — so on its own it
+   * evidences the gate but not the proposer. `logs/decisions-llm.jsonl` is the
+   * session where a model proposed all 60 hypotheses, and it is kept as its own
+   * file because one file cannot hold both facts: the entry-level `generator`
+   * field only means something if the two are not averaged together.
+   *
+   * Defaults to `decisions-llm.jsonl` beside `committedLogPath`, so a caller who
+   * redirects the canonical record gets the model one alongside it, and a
+   * single-file caller (`run-session.ts`, the tests) is unaffected.
+   *
+   * Like `committedLogPath`, this is only ever read. A record that is absent
+   * reads as empty rather than as an error, which is the honest report for a
+   * deployment that shipped without it.
+   */
+  modelLogPath?: string;
   bus?: SessionEventBus;
   generator?: HypothesisGenerator;
   breaker?: CircuitBreaker;
@@ -205,11 +227,14 @@ export class SessionLoop {
   readonly paperLogPath: string;
   /** The published record, served read-only. See `committedLogPath` in the options. */
   readonly committedLogPath: string;
+  /** The model-proposed record, served read-only. See `modelLogPath` in the options. */
+  readonly modelLogPath: string;
   readonly bus: SessionEventBus;
   readonly ledger: PaperLedger;
 
   private readonly log: DecisionLog;
   private readonly committed: DecisionLog;
+  private readonly model: DecisionLog;
   private readonly ctx: AppendContext;
   private readonly policy: GatePolicy;
   private readonly generator: HypothesisGenerator;
@@ -258,6 +283,10 @@ export class SessionLoop {
     // record that does not exist yet, which `readAll()` reports as empty.
     this.committedLogPath = opts.committedLogPath ?? this.logPath;
     this.committed = new DecisionLog(this.committedLogPath);
+    // Beside the canonical record, so a caller who redirects that one gets the
+    // model record with it rather than at a path neither of them chose.
+    this.modelLogPath = opts.modelLogPath ?? join(dirname(this.committedLogPath), 'decisions-llm.jsonl');
+    this.model = new DecisionLog(this.modelLogPath);
 
     this.generator = opts.generator ?? new HypothesisGenerator(loadGeneratorConfig());
     this.breaker = opts.breaker ?? new CircuitBreaker(this.policy, this.now);
@@ -1164,30 +1193,53 @@ export class SessionLoop {
   }
 
   /**
-   * Page the COMMITTED record rather than this process's session.
+   * Page a committed record rather than this process's session.
    *
    * What `/api/log` serves, and what a reader should be shown when they ask to
    * see "the record". Identical to `getLog` in every respect except which file it
    * reads, which is the whole point: the paging, the row shape and the gate
-   * policy used to render a verdict are the same code, so the record cannot be
-   * rendered by a different set of rules than the session was judged by.
+   * policy used to render a verdict are the same code, so a record cannot be
+   * rendered by a different set of rules than the one it was judged by.
    *
    * Reads through a `DecisionLog` opened on the record path. That read is
    * non-destructive — the constructor only reads — so a service that ships with
    * a committed record serves it without a chance of rewriting it.
+   *
+   * `record` picks WHICH committed record; see `RecordId`. It defaults to the
+   * canonical one so that every existing caller keeps the behaviour it had, and
+   * the choice is echoed back on the response rather than left for the caller to
+   * remember — see `LogResponse.record` for why that echo is load-bearing.
    */
-  getCommittedLog(opts: { limit?: number; before?: string | null } = {}): LogResponse {
-    const all = this.committed.readAll();
+  getCommittedLog(
+    opts: { limit?: number; before?: string | null; record?: RecordId } = {},
+  ): LogResponse {
+    const record: RecordId = opts.record ?? 'committed';
+    const source = record === 'llm' ? this.model : this.committed;
+    const all = source.readAll();
     const { rows, next_cursor } = pageRows(all, this.policy, {
       limit: opts.limit ?? 50,
       before: opts.before ?? null,
     });
     return {
       entries: rows,
-      total: this.committed.entryCount,
+      total: source.entryCount,
       next_cursor,
       generators: generatorTally(all),
+      record,
     };
+  }
+
+  /**
+   * The path of a committed record, for the endpoint that verifies one.
+   *
+   * The HTTP layer must verify the file it is about to describe, so it asks for
+   * the path rather than deriving one from the request — the same reason
+   * `logPath` is exposed for the session file. A verifier pointed at the wrong
+   * file would report a green chain over bytes the reader is not looking at,
+   * which is worse than reporting nothing.
+   */
+  recordPath(record: RecordId): string {
+    return record === 'llm' ? this.modelLogPath : this.committedLogPath;
   }
 
   getProvenance(): Provenance {
