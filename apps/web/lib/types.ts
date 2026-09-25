@@ -233,7 +233,57 @@ export interface LogResponse {
    * unknown, and the UI says nothing rather than guessing.
    */
   generators?: { tier: string; count: number }[];
+
+  /**
+   * The record these entries came from — an echo of what was asked for.
+   *
+   * THE OPTIONALITY HERE MEANS THE OPPOSITE OF THE OTHER OPTIONAL FIELDS, and
+   * that is the only reason this comment is this long. `generators` absent means
+   * "the server has nothing to say, so say nothing". `record` absent means the
+   * server DID NOT UNDERSTAND THE QUESTION: an instance deployed before record
+   * selection existed ignores `?record=llm` and answers with the canonical
+   * record — a 200 with a page of entirely true rows.
+   *
+   * So an absent `record` must NEVER be read as "same as what I asked for". It
+   * is the signal that this server cannot select records, and the only safe
+   * response is to refuse to render a selection at all. Rendering the canonical
+   * record under a heading claiming it is the model-proposed one is precisely
+   * the mislabelling the parameter was added to prevent, reached by the back
+   * door — and it would be worse than the original problem, because the page
+   * would look like it had checked.
+   */
+  record?: RecordId;
 }
+
+/**
+ * Which committed record a request is about.
+ *
+ * THERE ARE TWO RECORDS AND THEY ARE DIFFERENT DOCUMENTS. `committed` is the
+ * canonical research record — 201 entries, every one proposed by the
+ * deterministic enumerator, the session the promotion and the demotion rest on.
+ * `llm` is the model-proposed calibration record — 60 entries, every one
+ * proposed by Groq.
+ *
+ * Both are committed, both verify, and each entry's `generator` says which is
+ * which. They are two files rather than one because one file cannot hold both
+ * facts: merged, either the model proposed nothing in the record that exists,
+ * or the deterministic session is gone.
+ */
+export type RecordId = 'committed' | 'llm';
+
+/**
+ * AN ENTRY ID IS SCOPED TO ITS RECORD, NOT GLOBAL.
+ *
+ * Both files number their entries densely from `E-0001`, so the ids collide
+ * across records — and a colliding id is a genuinely different row. `E-0006` is
+ * the PROMOTE the submission rests on in the canonical record (p = 0.0147), and
+ * an unrelated KILL in the model record (p = 0.0352).
+ *
+ * Two consequences the UI must honour: never carry a `before` cursor across a
+ * record switch, and never treat an id as identifying a row without also
+ * knowing which record it came from.
+ */
+export const RECORD_IDS: readonly RecordId[] = ['committed', 'llm'];
 
 // ---------------------------------------------------------------------------
 // SSE /api/stream

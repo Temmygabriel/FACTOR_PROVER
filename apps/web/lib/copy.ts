@@ -16,7 +16,7 @@
 import type { KillReason } from './types';
 import type { Verdict } from './verdict';
 import { hasGateEvidence } from './verdict';
-import type { DecisionRow, HypothesisShape, SessionStats } from './types';
+import type { DecisionRow, HypothesisShape, RecordId, SessionStats } from './types';
 import { ABSENT, fmt, fmtIc, fmtInt, fmtT, fmtThreshold, targetLabel } from './format';
 import { PRESCRIBED } from './policy';
 
@@ -624,6 +624,117 @@ export function killReasonTechnical(row: DecisionRow): string[] {
       row.total_hypotheses_attempted_this_session,
     )}`,
   ];
+}
+
+/**
+ * THE TWO COMMITTED RECORDS, AND WHY THE EVIDENCE SCREEN HAS TO SAY SO.
+ *
+ * WHY THIS EXISTS. The demo leads with a model proposing hypotheses. This screen
+ * shows a record in which no model proposed anything, because it opens on the
+ * canonical one. Neither fact is hidden — `generator` is on every entry, and
+ * `proposerSentence` states who proposed what in the record being read — but a
+ * reader who watches Groq propose a hypothesis and then arrives at a page where
+ * every entry says `deterministic` has been left to work out for themselves that
+ * these are two different documents rather than a contradiction. That inference
+ * is the reader's to make only if the page has told them there are two records.
+ * Until it does, the honest reading of the screen is the wrong one.
+ *
+ * WHY BOTH ARE KEPT RATHER THAN MERGED. One file cannot hold both facts. Merged,
+ * either the canonical session — the record the promotion and the demotion rest
+ * on — is no longer the record that exists, or the model's session is not in a
+ * record at all. Two files, each carrying its own provenance on every line, is
+ * the only shape in which neither fact overwrites the other.
+ *
+ * THE SENTENCE BELOW IS THE LOAD-BEARING ONE, and it is a constant rather than
+ * prose written inline in a component so that it can be read and checked in one
+ * place. It states the division of labour exactly: the model chooses WHICH
+ * QUESTION IS ASKED; the gate — a fixed, preregistered statistical procedure —
+ * decides whether the evidence answers it. Neither half may be dropped. Saying
+ * only that a model was involved overstates it; saying only that a gate ran
+ * hides the agent. And it stops short of two things on purpose: the model does
+ * not decide a verdict, and nothing on this screen is a filled order.
+ */
+export const MODEL_PROPOSES_GATE_DECIDES =
+  'The model proposes the question. The deterministic statistical gate decides whether the evidence clears the preregistered bar.';
+
+export interface RecordCopy {
+  /** The selector's label — short enough to sit on a control. */
+  label: string;
+  /** The record's full name, as a heading. */
+  title: string;
+  /** What kind of document the record is. */
+  what: string;
+  /** What it is for: why a reader would open this one rather than the other. */
+  why: string;
+  /**
+   * What a reader must NOT conclude from it.
+   *
+   * Present on BOTH records, because each is misread in its own direction: the
+   * canonical one as "no model was involved", the model-proposed one as "the
+   * model decided the verdicts, and something traded". A note on one record
+   * would have read as a caveat on that record rather than as the distinction
+   * between them, which is the thing being explained.
+   */
+  not: string;
+}
+
+/**
+ * The copy for each record. Keyed by `RecordId`, so a third record cannot be
+ * added on the wire without this failing to compile.
+ *
+ * These describe what each record IS. They deliberately do not state a tally —
+ * "every entry in this one was proposed by X" is a claim about the file, and the
+ * page already makes it from the file itself via `proposerSentence`, which reads
+ * the server's count over the whole record rather than a constant written here.
+ * A tally typed into this table would be the one number on the screen that no
+ * longer came from the record.
+ */
+export const RECORD_COPY: Record<RecordId, RecordCopy> = {
+  committed: {
+    label: 'Canonical record',
+    title: 'Canonical deterministic research record',
+    what: 'The record the protocol produces on its own: hypotheses enumerated in a fixed order by a deterministic function of the attempt index, and every verdict decided by the preregistered gate.',
+    why: 'This is the record the project’s result rests on. The promotion of H-0006 and the demotion that followed it are both in it, and because its proposals are enumerated rather than sampled, re-running the protocol reproduces it entry for entry.',
+    not: 'This record is not evidence that no model was involved. It is the record the model did not propose; the model’s own session is the other record.',
+  },
+  llm: {
+    label: 'Model-proposed record',
+    title: 'Model-proposed calibration record',
+    what: 'The record a model’s proposals produce: the model chooses which relationships to test, and the same fixed gate then judges each one — the same policy version, the same floors, the same correction applied over the same kind of family.',
+    why: 'This is where the model is visible at work rather than merely configured. You can read what it chose to ask, and read the gate’s answer to each, on the same terms the canonical record is judged by.',
+    not: 'The model decided none of the verdicts in this record, and nothing in it was executed. It proposed the questions; it did not set the bar, apply it, or reach a verdict on any of them.',
+  },
+};
+
+/**
+ * The clearest example, in the rows in hand, of the model proposing and the gate
+ * deciding anyway — or null.
+ *
+ * WHICH ROW, AND WHY THAT RULE RATHER THAN AN ENTRY ID. Both records contain
+ * entries the gate killed for missing the Benjamini-Hochberg bar, and they are
+ * not equally good demonstrations. Benjamini-Hochberg walks up from the SMALLEST
+ * p-value, so the smallest p-value among those the bar still killed is the
+ * closest any proposal came to clearing it — the row where "the gate said no
+ * anyway" is doing the most work. A row killed at p = 0.9 demonstrates nothing:
+ * of course it was killed.
+ *
+ * In the model-proposed record this rule selects E-0046. The entry id is not
+ * written anywhere as a constant: the row is found in the rows, so if the record
+ * changes the card follows it, and if the rule finds nothing the card is omitted
+ * rather than filled in with an id that may no longer be there. `hasGateEvidence`
+ * is the same guard every other render path uses — a schema-killed row carries
+ * placeholder metrics that no test produced, and its zeros must never be shown
+ * as a measurement.
+ */
+export function closestBhKill(rows: DecisionRow[]): DecisionRow | null {
+  let best: DecisionRow | null = null;
+  for (const row of rows) {
+    if (row.decision !== 'KILL') continue;
+    if (row.reason !== 'p_value_exceeds_bh_threshold') continue;
+    if (!hasGateEvidence(row)) continue;
+    if (best === null || row.metrics.raw_p_value < best.metrics.raw_p_value) best = row;
+  }
+  return best;
 }
 
 /**
