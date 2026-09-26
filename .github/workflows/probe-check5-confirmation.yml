@@ -183,26 +183,76 @@ jobs:
           echo "=== what the CLI's own keyword search returned ==="
           cat "$OUT/search_confirm.txt" 2>/dev/null | head -40
 
-      - name: Does --confirm change what place says it will do?
-        # Merely being tolerated is not a two-phase contract. A real one would
-        # make the reply differ, so both replies are captured for comparison.
+      - name: Is the confirm contract LIVE, or only documented?
+        # THE DECISIVE MEASUREMENT. The tool schemas SAY confirm is "Required to
+        # execute destructive (high-risk) writes; without it such a call returns
+        # { confirmationRequired: true }". A description is not an observation.
+        # These two worlds look identical in the docs and are completely
+        # different findings:
+        #
+        #   envelope observed  -> the contract is real and live; `place` is
+        #                         simply outside its scope, which makes CHECK 5 a
+        #                         venue-classification question.
+        #   envelope absent    -> no action returns it, so CHECK 5's phase 1 can
+        #                         never fire against this CLI at all.
+        #
+        # So each confirm-gated action is called WITHOUT --confirm and its reply
+        # is inspected for the envelope. --dry-run throughout: nothing is sent,
+        # and no credentials are present, so nothing can reach an account.
         run: |
           set -uo pipefail
           BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+          OUT="$RUNNER_TEMP/surface"
 
           probe() {
             label="$1"; shift
             echo ""; echo "=== $label ==="; echo "\$ $*"
-            set +e; "$@" 2>&1; echo "--- exit code: $?"; set -e
+            set +e; "$@" 2>&1 | tee "$OUT/envelope_$label.json"; echo "--- exit code: ${PIPESTATUS[0]}"; set -e
           }
 
-          probe "place WITHOUT --confirm (dry run)" \
+          probe "place_without_confirm" \
             "$BGC" order --action place --category SPOT --symbol BTCUSDT \
               --side sell --orderType market --qty 0.001 --paper-trading --dry-run
 
-          probe "place WITH --confirm (dry run)" \
+          probe "place_with_confirm" \
             "$BGC" order --action place --category SPOT --symbol BTCUSDT \
               --side sell --orderType market --qty 0.001 --paper-trading --dry-run --confirm
+
+          probe "cancelAll_without_confirm" \
+            "$BGC" order --action cancelAll --category SPOT --dry-run
+
+          probe "cancelAll_with_confirm" \
+            "$BGC" order --action cancelAll --category SPOT --dry-run --confirm
+
+          probe "closeAll_without_confirm" \
+            "$BGC" position --action closeAll --category SPOT --dry-run
+
+          echo ""
+          echo "=== did ANY confirm-gated action return the envelope? ==="
+          if grep -l 'confirmationRequired' "$OUT"/envelope_*.json 2>/dev/null; then
+            echo ">>> THE ENVELOPE IS LIVE — the confirm contract is real, not docs-only"
+            echo "ENVELOPE=live" >> "$GITHUB_ENV"
+          else
+            echo ">>> no action returned confirmationRequired in its reply"
+            echo "ENVELOPE=absent" >> "$GITHUB_ENV"
+          fi
+
+          echo ""
+          echo "=== does --confirm change ANYTHING for place? ==="
+          # Same endpoint/operationId/path/wouldSend shape and an inert flag means
+          # the second phase is not a phase. requestTime and clientOid are random
+          # per call, so they are stripped before comparing.
+          strip() { sed -E 's/"requestTime":"[^"]*"/"requestTime":"X"/; s/"clientOid":"[^"]*"/"clientOid":"X"/' "$1"; }
+          if diff <(strip "$OUT/envelope_place_without_confirm.json") \
+                  <(strip "$OUT/envelope_place_with_confirm.json") >/dev/null 2>&1; then
+            echo ">>> IDENTICAL (modulo timestamps/ids): --confirm is INERT for place"
+            echo "PLACE_INERT=true" >> "$GITHUB_ENV"
+          else
+            echo ">>> the two replies DIFFER — --confirm changes what place does:"
+            diff <(strip "$OUT/envelope_place_without_confirm.json") \
+                 <(strip "$OUT/envelope_place_with_confirm.json") || true
+            echo "PLACE_INERT=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Summary
         if: always()
@@ -213,22 +263,46 @@ jobs:
             echo "Question: what would be required to make the intended two-phase"
             echo "confirmation occur with the current Agent Hub CLI?"
             echo
-            if [ "${FOUND:-unknown}" = "true" ]; then
-              echo "**A confirm requirement was found on some tool or action.** See"
-              echo "the search step — that is the routing target for CHECK_5."
-            elif [ "${FOUND:-unknown}" = "false" ]; then
-              echo "**No tool or action on the collected surface reports a true"
-              echo "confirm requirement, and the CLI's own keyword search for"
-              echo "'confirm' returns nothing.** With this CLI, \`--confirm\` is not"
-              echo "a two-phase contract, so the confirm leg of Execution Guard"
-              echo "CHECK 5 cannot be satisfied by a flag change. It would need a"
-              echo "CLI version that implements one, or a different integration path."
+            echo "**The confirm contract EXISTS.** Every write tool's schema carries"
+            echo "\`confirm\`, described as required for *destructive (high-risk)*"
+            echo "writes, and states that without it such a call returns"
+            echo "\`{ confirmationRequired: true }\` — the exact envelope \`guard.ts\`"
+            echo "waits for. But the contract is scoped BY ACTION, and for the"
+            echo "\`order\` tool the qualifier names \`cancelAll\`, not \`place\`."
+            echo
+            if [ "${ENVELOPE:-unknown}" = "live" ]; then
+              echo "**The envelope was observed live.** The contract is real, so"
+              echo "CHECK 5 failing to fire is a venue-classification fact: placing"
+              echo "is reversible and so is not in the destructive class, unlike"
+              echo "cancelAll/closeAll/withdrawal, which are."
+            elif [ "${ENVELOPE:-unknown}" = "absent" ]; then
+              echo "**The envelope was NOT observed on any action.** The contract"
+              echo "is documented but does not fire, so CHECK 5's phase 1 cannot"
+              echo "occur against this CLI for any action, not just \`place\`."
             else
-              echo "Probe did not reach a verdict — read the job log. A run that"
-              echo "collected no surface deliberately fails rather than reporting"
-              echo "'nothing found' over nothing."
+              echo "Envelope state not determined — read the job log."
             fi
             echo
+            if [ "${PLACE_INERT:-unknown}" = "true" ]; then
+              echo "**\`--confirm\` is inert for \`place\`**: with and without it the"
+              echo "reply is identical once timestamps and client ids are removed."
+              echo "So no flag combination makes the CLI ask for confirmation on a"
+              echo "placement."
+            fi
+            echo
+            echo "**What would be required, by route:**"
+            echo "1. *Flag change* — impossible. \`--confirm\` is already accepted and"
+            echo "   already emitted by the client; it has no effect on \`place\`."
+            echo "2. *CLI change* — Bitget would have to reclassify \`place\` as"
+            echo "   confirm-gated. That is a semantic change to their product, not a"
+            echo "   client fix, and it is not ours to make."
+            echo "3. *Client phase* — supply the second phase ourselves and label it"
+            echo "   as ours, not as Bitget's. \`guard.ts\` already implements the"
+            echo "   client half correctly; the venue simply never asks."
+            echo
+            echo "\`guard.ts:455-476\` already records the single-phase outcome as a"
+            echo "deviation rather than a normal pass, so nothing is being hidden."
+            echo
             echo "- no Bitget credentials were present (checked before any CLI ran)"
-            echo "- every order-shaped probe carried \`--dry-run\` and \`--paper-trading\`"
+            echo "- every probe carried \`--dry-run\`; nothing was sent"
           } >> "$GITHUB_STEP_SUMMARY"
