@@ -72,7 +72,22 @@ export const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
 
 export const LOOKBACKS: readonly number[] = [30, 60, 120, 240];
 
-const FAMILIES: readonly ExperimentFamily[] = [
+/**
+ * The families THIS enumerator walks.
+ *
+ * NARROWER THAN `EXPERIMENT_FAMILIES`, ON PURPOSE. That constant lists every
+ * family any policy version may use, which since v1.1 includes the three
+ * `*_pair` families. This enumerator is the production loop's fallback tier,
+ * and the production loop runs the v1.0 policy — so it walks v1.0's three
+ * families and nothing else. Adding a pair family here would silently start
+ * the running agent proposing BTCUSDT, which is a production change with its
+ * own blast radius, not a side effect of a research phase.
+ *
+ * Exported so the tests can assert the property that actually matters — that
+ * the space covers every target for every family the enumerator is *supposed*
+ * to walk — instead of asserting it over the wider union and failing.
+ */
+export const ENUMERATED_FAMILIES: readonly ExperimentFamily[] = [
   'funding_to_rtoken',
   'btc_momentum_to_rtoken',
   'combined_cross_asset',
@@ -134,7 +149,7 @@ export function enumerableSpace(): ProposedHypothesis[] {
 
   const out: ProposedHypothesis[] = [];
 
-  for (const family of FAMILIES) {
+  for (const family of ENUMERATED_FAMILIES) {
     for (const signal of FAMILY_SIGNALS[family]) {
       for (const target of RTOKEN_SYMBOLS) {
         for (const cond of conditionsFor(signal)) {
