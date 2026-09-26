@@ -88,6 +88,38 @@ export type VenuePairSymbol = (typeof VENUE_PAIR_SYMBOLS)[number];
  */
 export type TargetSymbol = RTokenSymbol | VenuePairSymbol;
 
+/**
+ * Narrow a TargetSymbol back to an RTokenSymbol, or throw.
+ *
+ * WHY THIS EXISTS, AND WHY THE PRODUCTION TYPES STAY NARROW. Widening
+ * `FactorHypothesis.target` to `TargetSymbol` let the v1.1 research phase test
+ * BTCUSDT. It did NOT give the running session loop a pair universe: the loop
+ * runs the v1.0 policy, whose enumerator offers rTokens only, so it cannot
+ * propose a pair target today.
+ *
+ * The types that describe what the RUNNING SYSTEM PRODUCES — `PromotedFactor`,
+ * `HypothesisShape`, the breaker's degeneracy window — therefore stay narrowed
+ * to `RTokenSymbol`. Widening them would make them claim a target universe the
+ * loop does not have: an API that said `target: string` while the loop could
+ * only ever emit rTokens would be over-claiming, not future-proofing.
+ *
+ * So the narrowing is explicit and happens exactly where a proposed hypothesis
+ * crosses into those contract types. If the loop is ever switched to a pair
+ * universe, this throws at the boundary instead of silently writing a target
+ * the contract cannot represent — a loud failure at the right place, rather
+ * than a quiet widening everywhere.
+ */
+export function requireRTokenTarget(target: TargetSymbol, where: string): RTokenSymbol {
+  if ((RTOKEN_SYMBOLS as readonly string[]).includes(target)) return target as RTokenSymbol;
+  throw new Error(
+    `${where}: the production contract cannot represent target "${target}". ` +
+      `The session loop runs the v1.0 policy, whose target universe is the rToken list. ` +
+      `If a research phase is being promoted to production, the contract types ` +
+      `(PromotedFactor, HypothesisShape, the breaker's degeneracy window) must be ` +
+      `widened to TargetSymbol deliberately, not by this helper being removed.`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Experiment families — the bounded search space.
 // ---------------------------------------------------------------------------

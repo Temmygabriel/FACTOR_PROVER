@@ -16,7 +16,7 @@
  */
 
 import type { PromotedFactor } from '../api/contract.js';
-import type { FactorHypothesis } from '../types.js';
+import { requireRTokenTarget, type FactorHypothesis } from '../types.js';
 
 /**
  * Forward observations a factor needs before a decay half-life is fitted.
@@ -105,7 +105,7 @@ export class PaperLedger {
       factor_id: this.formatFactorId(),
       hypothesis_id: params.hypothesis.hypothesis_id,
       signal: params.hypothesis.signal,
-      target: params.hypothesis.target,
+      target: requireRTokenTarget(params.hypothesis.target, 'PromotedFactor'),
       direction: params.hypothesis.direction,
       window_minutes: params.hypothesis.forward_return_minutes,
       lookback_minutes: params.hypothesis.condition.lookback_minutes,

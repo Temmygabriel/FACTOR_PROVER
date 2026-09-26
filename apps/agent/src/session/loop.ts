@@ -88,6 +88,7 @@ import {
   EXPERIMENT_FAMILIES,
   FAMILY_SIGNALS,
   RTOKEN_SYMBOLS,
+  requireRTokenTarget,
   type BacktestResult,
   type ExperimentFamily,
   type FactorHypothesis,
@@ -593,7 +594,12 @@ export class SessionLoop {
     const fallback = fallbackReason(outcome.tierFailures);
     this.generatorTiers[tier] = (this.generatorTiers[tier] ?? 0) + 1;
     this.breaker.recordHypothesis(
-      outcome.proposal ? { signal: outcome.proposal.signal, target: outcome.proposal.target } : undefined,
+      outcome.proposal
+        ? {
+            signal: outcome.proposal.signal,
+            target: requireRTokenTarget(outcome.proposal.target, 'circuit breaker degeneracy window'),
+          }
+        : undefined,
     );
 
     // --- screen 1: the schema wall ----------------------------------------
@@ -630,7 +636,7 @@ export class SessionLoop {
         hypothesis_id: hypothesisId,
         hypothesis: {
           signal: proposal.signal,
-          target: proposal.target,
+          target: requireRTokenTarget(proposal.target, 'session decision row'),
           direction: proposal.direction,
           condition: { ...proposal.condition },
           forward_return_minutes: proposal.forward_return_minutes,
@@ -685,7 +691,7 @@ export class SessionLoop {
         hypothesis_id: hypothesisId,
         hypothesis: {
           signal: proposal.signal,
-          target: proposal.target,
+          target: requireRTokenTarget(proposal.target, 'session decision row'),
           direction: proposal.direction,
           condition: { ...proposal.condition },
           forward_return_minutes: proposal.forward_return_minutes,
