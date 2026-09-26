@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { assertLeadInBounded } from './data/freezeWindow.js';
+import { RTOKEN_SYMBOLS } from './types.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,18 @@ export interface GatePolicy {
   require_baseline_beat: boolean;
   sampling: 'non_overlapping' | 'overlapping';
   families_enabled: string[];
+  /**
+   * Which instruments a hypothesis governed by THIS policy may name as its
+   * target. Absent means v1.0's rToken list.
+   *
+   * AN ABSENT FIELD IS THE ENFORCEMENT, not an oversight. gate_policy.json has
+   * been hashed into every v1.0 entry's `policy_sha256`, so adding this key to
+   * it would change its bytes and break the published record's ability to name
+   * the policy it ran under. Leaving v1.0's file untouched and defaulting the
+   * absent case to `RTOKEN_SYMBOLS` keeps that file byte-identical while giving
+   * v1.1 an explicit, checkable way to say what it targets.
+   */
+  target_universe?: string[];
   circuit_breaker: {
     max_hypotheses_per_day: number;
     max_promotes_per_day: number;
@@ -106,6 +119,39 @@ export function loadGatePolicy(): LoadedConfig<GatePolicy> {
   const { text, sha256 } = readRaw(path);
   policyCache = { data: JSON.parse(text) as GatePolicy, sha256, path };
   return policyCache;
+}
+
+/**
+ * Load a policy from an explicit path, WITHOUT touching the v1.0 cache.
+ *
+ * v1.1 lives in its own file (`gate_policy.v1.1.json`) for one reason: v1.0's
+ * bytes are hashed into every entry of the published record, so the only way to
+ * add a policy version without invalidating that record is to add a FILE. This
+ * function is how a later version is read. It deliberately does not populate or
+ * consult `policyCache`, so loading a v1.1 policy can never change what the
+ * running loop means by "the policy".
+ *
+ * The returned `sha256` is over the exact bytes on disk, which is what gets
+ * recorded in every entry the policy governs — the same property `loadGatePolicy`
+ * provides for v1.0.
+ */
+export function loadGatePolicyFile(path: string): LoadedConfig<GatePolicy> {
+  const { text, sha256 } = readRaw(path);
+  return { data: JSON.parse(text) as GatePolicy, sha256, path };
+}
+
+/**
+ * The instruments a policy permits as targets.
+ *
+ * The default is the point: a policy that says nothing about targets gets
+ * v1.0's rToken list, so v1.0 semantics are the fallback rather than a special
+ * case, and a policy that WANTS a wider universe has to state it in a file that
+ * is separately hashed and separately reviewable.
+ */
+export function targetsForPolicy(policy: GatePolicy): string[] {
+  const declared = policy.target_universe;
+  if (!Array.isArray(declared) || declared.length === 0) return [...RTOKEN_SYMBOLS];
+  return declared.map((t) => String(t));
 }
 
 /** Test seam — lets unit tests swap in a policy without touching disk. */

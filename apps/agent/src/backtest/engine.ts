@@ -26,7 +26,7 @@ import {
   studentTTwoTailedP,
   tStatFromR,
 } from './stats.js';
-import { loadGatePolicy, type PartitionName } from '../config.js';
+import { loadGatePolicy, type GatePolicy, type PartitionName } from '../config.js';
 import { COMBINED_SIGNALS, type BacktestResult, type FactorHypothesis, type Observation } from '../types.js';
 
 const MINUTE_MS = 60_000;
@@ -196,6 +196,15 @@ export interface RunBacktestOptions {
   partition: PartitionName;
   /** Manual override for the single out-of-sample demo pass. */
   allowLockedTest?: boolean;
+  /**
+   * The policy this run is governed by. Defaults to the live v1.0 policy.
+   *
+   * Injected so a later policy VERSION can be researched without editing the
+   * running system's policy file — which matters because v1.0's bytes are hashed
+   * into the published record and must not move. Only two fields are read here
+   * (`min_obs`, and the backtest time budget); the gate reads the rest.
+   */
+  policy?: GatePolicy;
 }
 
 export interface BacktestOutcome {
@@ -220,7 +229,7 @@ export interface BacktestOutcome {
 }
 
 export async function runBacktest(opts: RunBacktestOptions): Promise<BacktestOutcome> {
-  const policy = loadGatePolicy().data;
+  const policy = opts.policy ?? loadGatePolicy().data;
   const budgetMs = policy.circuit_breaker.max_backtest_duration_ms;
 
   const { hypothesis } = opts;

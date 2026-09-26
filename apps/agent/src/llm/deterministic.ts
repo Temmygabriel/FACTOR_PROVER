@@ -38,7 +38,7 @@ import {
 import { RTOKEN_SYMBOLS } from '../types.js';
 import { validateProposal } from '../schema/validate.js';
 
-interface ConditionTemplate {
+export interface ConditionTemplate {
   operator: Operator;
   threshold: number;
 }
@@ -47,8 +47,13 @@ interface ConditionTemplate {
  * Threshold/operator pairs chosen from the measured signal distributions, so
  * every one of them selects a non-empty event set by construction. See
  * docs/DATA_FINDINGS.md §9 for the funding-rate distribution these come from.
+ *
+ * EXPORTED so a later research phase can reuse the identical grid. A v1.1 sweep
+ * that re-declared its own thresholds could silently test a different space
+ * while reporting that nothing else changed; importing the same constants makes
+ * that impossible rather than merely unintended.
  */
-const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
+export const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'gt', threshold: 0.00005 },
   { operator: 'gt', threshold: 0.00009 },
   { operator: 'gt', threshold: 0.00002 },
@@ -57,7 +62,7 @@ const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
 ];
 
 /** Spot returns are in PERCENT. Thresholds below 0.01 are rejected. */
-const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
+export const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'gt', threshold: 0.25 },
   { operator: 'gt', threshold: 0.5 },
   { operator: 'gt', threshold: 0.1 },
@@ -65,7 +70,7 @@ const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'lt', threshold: -0.5 },
 ];
 
-const LOOKBACKS: readonly number[] = [30, 60, 120, 240];
+export const LOOKBACKS: readonly number[] = [30, 60, 120, 240];
 
 const FAMILIES: readonly ExperimentFamily[] = [
   'funding_to_rtoken',

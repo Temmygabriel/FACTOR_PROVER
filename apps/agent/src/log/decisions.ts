@@ -16,7 +16,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { GateDecision, KillReason } from '../types.js';
 import type { PartitionName } from '../config.js';
-import { loadGatePolicy, loadPartitions } from '../config.js';
+import { loadGatePolicy, loadPartitions, type GatePolicy, type LoadedConfig } from '../config.js';
 import { frozenDatasetHash } from '../data/frozen.js';
 
 /** Recursively sort object keys so serialization is deterministic. */
@@ -166,8 +166,20 @@ export interface AppendContext {
  * hash, so a missing one is not a cosmetic gap — it is a verdict that can no
  * longer be tied to the exact inputs that produced it.
  */
-export function buildAppendContext(params: { sessionId: string; fdrLevel: number }): AppendContext {
-  const policy = loadGatePolicy();
+export function buildAppendContext(params: {
+  sessionId: string;
+  fdrLevel: number;
+  /**
+   * The loaded policy this session runs under. Defaults to the live v1.0 file.
+   *
+   * Passed as the whole `LoadedConfig` rather than a bare hash so the version
+   * STRING and the hash cannot come from different files — a session that
+   * recorded v1.1's hash beside v1.0's version number would produce entries that
+   * name a policy that never existed.
+   */
+  policy?: LoadedConfig<GatePolicy>;
+}): AppendContext {
+  const policy = params.policy ?? loadGatePolicy();
   const partitions = loadPartitions();
   return {
     session_id: params.sessionId,
