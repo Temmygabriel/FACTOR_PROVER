@@ -10,24 +10,28 @@ name: Probe CHECK_5 confirmation contract
 # reports `requiresConfirm: false`, and that the dry-run probes returned no
 # `confirmationRequired`. That is a measurement of ONE action. It does not
 # establish whether the CLI implements a confirm contract SOMEWHERE ELSE — on a
-# different tool, a different action, or behind a different flag. Those are
+# different tool, a different domain, or behind a different flag. Those are
 # different findings with different consequences:
 #
-#   - no confirm contract anywhere  -> CHECK_5 cannot be satisfied by any flag
+#   no confirm contract anywhere  -> CHECK_5 cannot be satisfied by any flag
 #                                      change; it needs a CLI version that adds
 #                                      one, or a different integration path.
-#   - a contract on another action  -> CHECK_5 can be satisfied by routing
+#   a contract elsewhere          -> CHECK_5 can be satisfied by routing
 #                                      placement through that action.
 #
-# So this sweeps the WHOLE surface rather than re-probing the one action the
-# code already checked, and greps the whole thing for confirm semantics.
+# FIRST VERSION OF THIS WORKFLOW WAS WORTHLESS, AND THIS IS WHY. It assumed
+# `discover` returns a flat list of tools and pulled the list out of the raw
+# text of the listing. The real shape is nested — `discover` returns DOMAINS,
+# a domain returns its tools, a tool returns its input schema — so the
+# extraction found nothing, the per-tool sweep ran over an empty list, and the
+# grep reported "no matches at all" over an empty file. A probe that searches
+# nothing and reports finding nothing is not evidence. This version walks the
+# real shape and REFUSES TO REPORT A VERDICT unless it actually collected a
+# non-trivial surface first.
 #
-# WHY IT IS SAFE. Identical to verify-agent-hub.yml: no Bitget credentials are
-# configured, checked BEFORE any CLI runs, and every order-shaped probe carries
-# --dry-run and --paper-trading. Nothing here can reach an account.
-#
-# READ THE OUTPUT, CHANGE THE CODE. If a confirm contract exists anywhere, the
-# step summary names the tool and action it lives on.
+# WHY IT IS SAFE. No Bitget credentials are configured, checked BEFORE any CLI
+# runs, and every order-shaped probe carries --dry-run and --paper-trading.
+# Nothing here can reach an account.
 
 on:
   workflow_dispatch:
@@ -37,7 +41,7 @@ permissions:
 
 jobs:
   probe:
-    name: Sweep every tool and action for confirm semantics
+    name: Walk the whole discovery surface and search it for confirm
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -79,131 +83,126 @@ jobs:
           node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
           echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 
-      - name: Sweep the discovery surface
+      - name: Walk domains -> tools -> schemas
         run: |
           set -uo pipefail
           BGC="$TOOLCHAIN/node_modules/.bin/bgc"
-          OUT="$RUNNER_TEMP/discovery"
+          OUT="$RUNNER_TEMP/surface"
           mkdir -p "$OUT"
 
-          echo "=== top-level --version ==="
-          "$BGC" --version 2>&1 || true
+          echo "=== version ==="; "$BGC" --version 2>&1 || true
 
-          # The tool list is the input to the sweep, so it has to be machine
-          # readable. If `discover --json` is unsupported the fallback below is
-          # the plain listing and the sweep is driven by a fixed list instead.
-          echo ""
-          echo "=== discover (raw) ==="
-          "$BGC" discover 2>&1 | tee "$OUT/discover.raw" || true
+          # `--json` throughout: the human-readable form truncates descriptions
+          # with an ellipsis, and a truncated parameter list is precisely the
+          # thing that would hide a confirm flag.
+          echo ""; echo "=== discover (root) ==="
+          "$BGC" discover --json > "$OUT/root.json" 2>"$OUT/root.err" \
+            || { echo "root discover failed:"; cat "$OUT/root.err"; }
+          cat "$OUT/root.json"; echo
 
-          echo ""
-          echo "=== discover --json ==="
-          if "$BGC" discover --json > "$OUT/discover.json" 2>"$OUT/discover.json.err"; then
-            echo "json form supported"
-            head -c 1200 "$OUT/discover.json"; echo
-          else
-            echo "json form NOT supported:"
-            cat "$OUT/discover.json.err"
-            echo "[]" > "$OUT/discover.json"
-          fi
+          domains=$(node -e "
+            const d=require('$OUT/root.json');
+            const dom=(d.data&&d.data.domains)||[];
+            console.log(dom.map(x=>x.domain).join(' '));
+          " 2>/dev/null || echo "")
+          echo "domains: ${domains:-<none>}"
 
-          # Extract tool names from whichever form worked.
-          if [ -s "$OUT/discover.json" ] && node -e "
-            const d=require('$OUT/discover.json');
-            const arr=Array.isArray(d)?d:(d.tools||d.data||[]);
-            const names=arr.map(t=>typeof t==='string'?t:(t.name||t.tool)).filter(Boolean);
-            require('fs').writeFileSync('$OUT/tools.txt', names.join('\n'));
-            process.exit(names.length?0:1);
-          " 2>/dev/null; then
-            echo "tools extracted from json: $(wc -l < "$OUT/tools.txt")"
-          else
-            grep -oE '^[[:space:]]*[a-z_]+[a-z_0-9]*' "$OUT/discover.raw" \
-              | tr -d ' ' | sort -u > "$OUT/tools.txt" || true
-            echo "tools extracted from raw text: $(wc -l < "$OUT/tools.txt")"
-          fi
-          echo "--- tool list ---"
-          cat "$OUT/tools.txt"
+          for dom in $domains; do
+            echo ""; echo "=== domain: $dom ==="
+            "$BGC" discover --domain "$dom" --json > "$OUT/domain_$dom.json" 2>&1 || true
+            cat "$OUT/domain_$dom.json"; echo
 
-          echo ""
-          echo "=== per-tool action sweep ==="
-          : > "$OUT/all.txt"
-          while read -r tool; do
-            [ -n "$tool" ] || continue
-            echo "" | tee -a "$OUT/all.txt"
-            echo "########## TOOL: $tool ##########" | tee -a "$OUT/all.txt"
-            "$BGC" discover --tool "$tool" 2>&1 | tee -a "$OUT/all.txt" || true
+            # Tool names live somewhere under data; search the parsed object for
+            # the first array of names rather than assuming one exact path.
+            tools=$(node -e "
+              const fs=require('fs');
+              const d=JSON.parse(fs.readFileSync('$OUT/domain_$dom.json','utf8'));
+              const out=[];
+              const walk=(v)=>{
+                if(Array.isArray(v)){ for(const x of v){
+                  if(typeof x==='string') out.push(x);
+                  else if(x&&typeof x==='object'){ if(x.name) out.push(x.name); if(x.tool) out.push(x.tool); if(x.action) out.push(x.action); walk(x.tools); }
+                } } else if(v&&typeof v==='object'){ for(const k of Object.keys(v)) walk(v[k]); }
+              };
+              walk(d);
+              console.log([...new Set(out)].join(' '));
+            " 2>/dev/null || echo "")
+            echo "  tools: ${tools:-<none>}"
 
-            # Every action this tool reports, so each one can be asked for its
-            # own parameter list. This is where a per-action `requiresConfirm`
-            # would show up.
-            for action in $(grep -oE '"?(action|name)"?[": ]+"?[a-z_]+' "$OUT/all.txt" \
-                            | grep -oE '[a-z_]+$' | sort -u); do
-              echo "" | tee -a "$OUT/all.txt"
-              echo "----- $tool / $action -----" | tee -a "$OUT/all.txt"
-              "$BGC" discover --tool "$tool" --action "$action" 2>&1 | tee -a "$OUT/all.txt" || true
+            for t in $tools; do
+              "$BGC" discover --tool "$t" --json > "$OUT/tool_${t}.json" 2>&1 || true
             done
-          done < "$OUT/tools.txt"
+          done
 
-      - name: Grep the whole surface for confirm semantics
+          # The CLI's own keyword search over the whole surface. This is the most
+          # direct form of the question: if the CLI knows of any tool, action or
+          # parameter involving confirmation, it should surface it here.
+          echo ""; echo "=== discover --search confirm ==="
+          "$BGC" discover --search confirm 2>&1 | tee "$OUT/search_confirm.txt" || true
+          echo ""; echo "=== discover --search confirm --json ==="
+          "$BGC" discover --search confirm --json 2>&1 | tee "$OUT/search_confirm.json" || true
+
+          echo ""; echo "=== collected ==="
+          ls -la "$OUT"
+          echo "total bytes: $(cat "$OUT"/*.json 2>/dev/null | wc -c)"
+
+      - name: Search the collected surface for confirm semantics
         run: |
           set -uo pipefail
-          OUT="$RUNNER_TEMP/discovery"
+          OUT="$RUNNER_TEMP/surface"
 
-          echo "=== every line mentioning confirm, case-insensitive ==="
-          grep -in "confirm" "$OUT/all.txt" | tee "$RUNNER_TEMP/confirm-lines.txt" || echo "(no matches at all)"
+          # TEETH CHECK, BEFORE ANY VERDICT. The first version of this workflow
+          # collected nothing and reported "no matches", which reads as a finding
+          # and is not one. If the collection is too small to be the real surface,
+          # this fails instead of answering.
+          bytes=$(cat "$OUT"/*.json 2>/dev/null | wc -c)
+          files=$(ls "$OUT"/*.json 2>/dev/null | wc -l)
+          echo "collected $files json files, $bytes bytes"
+          if [ "$bytes" -lt 3000 ] || [ "$files" -lt 3 ]; then
+            echo "::error::collection too small ($files files, $bytes bytes) — the sweep did not collect the real surface, so any 'no matches' below would be vacuous"
+            exit 1
+          fi
+          echo "teeth check passed: the sweep collected a real surface"
 
           echo ""
-          echo "=== does ANY action report a confirm requirement as TRUE? ==="
-          # A two-phase contract would have to say so somewhere in the metadata.
-          # Both spellings are checked because the code that reads this
-          # (agentHub.ts) looks for `confirmationRequired`, while the discovery
-          # output it quoted uses `requiresConfirm`.
-          if grep -iE '"(requiresConfirm|confirmationRequired|require_confirm|needsConfirm)"[[:space:]]*:[[:space:]]*true' \
-               "$OUT/all.txt" "$OUT/discover.raw" 2>/dev/null; then
-            echo ">>> FOUND a true confirm requirement (see above)"
+          echo "=== every occurrence of 'confirm' in the collected surface ==="
+          grep -io '.\{0,80\}confirm.\{0,80\}' "$OUT"/*.json | sort -u | head -60 \
+            || echo "(no occurrence of 'confirm' anywhere)"
+
+          echo ""
+          echo "=== does ANY tool or action require a confirmation? ==="
+          if grep -iE '"(requiresConfirm|confirmationRequired|require_confirm|needsConfirm|requires_confirmation)"[[:space:]]*:[[:space:]]*true' "$OUT"/*.json 2>/dev/null; then
+            echo ">>> FOUND an action that requires confirmation"
             echo "FOUND=true" >> "$GITHUB_ENV"
           else
-            echo ">>> no action anywhere reports a true confirm requirement"
+            echo ">>> no tool or action reports a true confirm requirement"
             echo "FOUND=false" >> "$GITHUB_ENV"
           fi
 
           echo ""
-          echo "=== the false ones, for contrast ==="
-          grep -iE '"(requiresConfirm|confirmationRequired|require_confirm|needsConfirm)"[[:space:]]*:[[:space:]]*false' \
-            "$OUT/all.txt" "$OUT/discover.raw" 2>/dev/null | sort -u || echo "(none)"
+          echo "=== what the CLI's own keyword search returned ==="
+          cat "$OUT/search_confirm.txt" 2>/dev/null | head -40
 
-          echo ""
-          echo "=== any --confirm flag documented in any parameter list? ==="
-          grep -iE '(^|[^-])confirm' "$OUT/all.txt" | grep -iE 'flag|param|option|--' | sort -u || echo "(none)"
-
-      - name: Probe whether place itself changes behaviour under --confirm
-        # The one thing the earlier workflow did NOT isolate: whether passing
-        # --confirm changes what the CLI SAYS it will do, as opposed to merely
-        # being tolerated. A two-phase contract would make the reply differ.
+      - name: Does --confirm change what place says it will do?
+        # Merely being tolerated is not a two-phase contract. A real one would
+        # make the reply differ, so both replies are captured for comparison.
         run: |
           set -uo pipefail
           BGC="$TOOLCHAIN/node_modules/.bin/bgc"
 
           probe() {
             label="$1"; shift
-            echo ""
-            echo "=== $label ==="
-            echo "\$ $*"
-            set +e
-            "$@" 2>&1
-            echo "--- exit code: $?"
-            set -e
+            echo ""; echo "=== $label ==="; echo "\$ $*"
+            set +e; "$@" 2>&1; echo "--- exit code: $?"; set -e
           }
 
-          probe "order place WITHOUT --confirm (dry run)" \
+          probe "place WITHOUT --confirm (dry run)" \
             "$BGC" order --action place --category SPOT --symbol BTCUSDT \
-              --side sell --orderType market --qty 0.001 \
-              --paper-trading --dry-run
+              --side sell --orderType market --qty 0.001 --paper-trading --dry-run
 
-          probe "order place WITH --confirm (dry run)" \
+          probe "place WITH --confirm (dry run)" \
             "$BGC" order --action place --category SPOT --symbol BTCUSDT \
-              --side sell --orderType market --qty 0.001 \
-              --paper-trading --dry-run --confirm
+              --side sell --orderType market --qty 0.001 --paper-trading --dry-run --confirm
 
       - name: Summary
         if: always()
@@ -215,17 +214,19 @@ jobs:
             echo "confirmation occur with the current Agent Hub CLI?"
             echo
             if [ "${FOUND:-unknown}" = "true" ]; then
-              echo "**A confirm requirement was found on some action.** See the"
-              echo "grep step — that action is the routing target for CHECK_5."
+              echo "**A confirm requirement was found on some tool or action.** See"
+              echo "the search step — that is the routing target for CHECK_5."
             elif [ "${FOUND:-unknown}" = "false" ]; then
-              echo "**No action on the swept surface reports a true confirm"
-              echo "requirement.** With this CLI, \`--confirm\` is accepted but is"
-              echo "not a two-phase contract, so the confirm leg of Execution"
-              echo "Guard CHECK 5 cannot be satisfied by a flag change. It would"
-              echo "need a CLI version that implements one, or a different"
-              echo "integration path."
+              echo "**No tool or action on the collected surface reports a true"
+              echo "confirm requirement, and the CLI's own keyword search for"
+              echo "'confirm' returns nothing.** With this CLI, \`--confirm\` is not"
+              echo "a two-phase contract, so the confirm leg of Execution Guard"
+              echo "CHECK 5 cannot be satisfied by a flag change. It would need a"
+              echo "CLI version that implements one, or a different integration path."
             else
-              echo "Probe did not reach the verdict step — read the job log."
+              echo "Probe did not reach a verdict — read the job log. A run that"
+              echo "collected no surface deliberately fails rather than reporting"
+              echo "'nothing found' over nothing."
             fi
             echo
             echo "- no Bitget credentials were present (checked before any CLI ran)"
