@@ -254,6 +254,71 @@ jobs:
             echo "PLACE_INERT=false" >> "$GITHUB_ENV"
           fi
 
+      - name: Is the confirm gate live code, or only prose?
+        # THE GAP THE DRY RUN CANNOT CLOSE. Above, `cancelAll` WITHOUT --confirm
+        # returned a plain dry-run preview and no envelope — but `--dry-run`
+        # returns the preview BEFORE the confirm gate would be evaluated, so that
+        # result is CONTAMINATED and proves nothing either way. It cannot
+        # distinguish "the gate is live" from "dry-run bypasses the gate".
+        #
+        # So the gate is exercised on its real path, with no --dry-run. Nothing
+        # can be sent: the job's first step verified no Bitget credentials exist
+        # in the environment or on disk, and this step RE-CHECKS that immediately
+        # before running and SKIPS ITSELF if any credential appeared. Without
+        # credentials the call cannot authenticate, let alone cancel anything —
+        # and if the gate is client-side it answers before auth is even reached.
+        #
+        # This is worth the care because the two outcomes are different findings:
+        # gate live  -> the contract works exactly as guard.ts expects and simply
+        #               does not cover `place`, making CHECK 5 a classification fact.
+        # gate absent-> nothing returns the envelope, so CHECK 5's phase 1 could
+        #               never fire against this CLI at all.
+        run: |
+          set -uo pipefail
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+          OUT="$RUNNER_TEMP/surface"
+
+          for v in BITGET_API_KEY BITGET_API_SECRET BITGET_API_PASSPHRASE BITGET_API_KEY_ID; do
+            if [ -n "${!v:-}" ]; then
+              echo "::warning::$v appeared — skipping the live-path probe to be safe"
+              echo "GATE=unknown" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          for f in "$HOME/.bgc/config.json" "$HOME/.bitget/credentials"; do
+            if [ -e "$f" ]; then
+              echo "::warning::$f appeared — skipping the live-path probe to be safe"
+              echo "GATE=unknown" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "re-confirmed: still no credentials — the call cannot authenticate"
+
+          echo ""
+          echo "=== cancelAll WITHOUT --confirm, on its real path (high risk) ==="
+          set +e
+          "$BGC" order --action cancelAll --category SPOT 2>&1 | tee "$OUT/gate_cancelall.json"
+          echo "--- exit code: ${PIPESTATUS[0]}"
+          set -e
+
+          echo ""
+          echo "=== place WITHOUT --confirm, on its real path (riskLevel: write) ==="
+          set +e
+          "$BGC" order --action place --category SPOT --symbol BTCUSDT \
+            --side sell --orderType market --qty 0.001 2>&1 | tee "$OUT/gate_place.json"
+          echo "--- exit code: ${PIPESTATUS[0]}"
+          set -e
+
+          echo ""
+          echo "=== did the high-risk action return the envelope? ==="
+          if grep -q 'confirmationRequired' "$OUT/gate_cancelall.json" 2>/dev/null; then
+            echo ">>> GATE IS LIVE — cancelAll returned confirmationRequired"
+            echo "GATE=live" >> "$GITHUB_ENV"
+          else
+            echo ">>> cancelAll did not return confirmationRequired on its real path"
+            echo "GATE=absent" >> "$GITHUB_ENV"
+          fi
+
       - name: Summary
         if: always()
         run: |
@@ -270,17 +335,35 @@ jobs:
             echo "waits for. But the contract is scoped BY ACTION, and for the"
             echo "\`order\` tool the qualifier names \`cancelAll\`, not \`place\`."
             echo
-            if [ "${ENVELOPE:-unknown}" = "live" ]; then
-              echo "**The envelope was observed live.** The contract is real, so"
-              echo "CHECK 5 failing to fire is a venue-classification fact: placing"
-              echo "is reversible and so is not in the destructive class, unlike"
-              echo "cancelAll/closeAll/withdrawal, which are."
-            elif [ "${ENVELOPE:-unknown}" = "absent" ]; then
-              echo "**The envelope was NOT observed on any action.** The contract"
-              echo "is documented but does not fire, so CHECK 5's phase 1 cannot"
-              echo "occur against this CLI for any action, not just \`place\`."
+            echo "**The CLI's own risk classification is the discriminator**, taken"
+            echo "from the replies rather than from prose:"
+            echo
+            echo "| operation | riskLevel | confirm-gated |"
+            echo "|---|---|---|"
+            echo "| \`placeOrder\` | \`write\` | no |"
+            echo "| \`cancelAllOrders\` | \`high\` | yes |"
+            echo "| \`closeAllPositions\` | \`high\` | yes |"
+            echo
+            echo "The gate sits on \`riskLevel: high\`. Placement is \`riskLevel: write\`."
+            echo "That is coherent rather than arbitrary: placing is reversible — you"
+            echo "can cancel it — while cancelAll wipes the book and closeAll exits"
+            echo "every position. So \`place\` is outside the class confirm exists to"
+            echo "gate, by the venue's own stated taxonomy."
+            echo
+            if [ "${GATE:-unknown}" = "live" ]; then
+              echo "**Measured: the gate is live code.** \`cancelAll\` on its real path"
+              echo "returned \`confirmationRequired\`, so the two-phase contract works"
+              echo "exactly as \`guard.ts\` expects. CHECK 5 is implemented correctly;"
+              echo "the venue simply classifies placement as non-destructive. That"
+              echo "makes this a classification fact, not a defect in the client."
+            elif [ "${GATE:-unknown}" = "absent" ]; then
+              echo "**Measured: no envelope on the real path either.** Nothing"
+              echo "returns \`confirmationRequired\`, so CHECK 5's phase 1 could never"
+              echo "fire against this CLI for any action, not merely for \`place\`."
             else
-              echo "Envelope state not determined — read the job log."
+              echo "Gate liveness not determined (probe skipped or inconclusive) —"
+              echo "read the job log. A skipped probe is reported as skipped rather"
+              echo "than folded into a verdict."
             fi
             echo
             if [ "${PLACE_INERT:-unknown}" = "true" ]; then
@@ -293,16 +376,25 @@ jobs:
             echo "**What would be required, by route:**"
             echo "1. *Flag change* — impossible. \`--confirm\` is already accepted and"
             echo "   already emitted by the client; it has no effect on \`place\`."
-            echo "2. *CLI change* — Bitget would have to reclassify \`place\` as"
-            echo "   confirm-gated. That is a semantic change to their product, not a"
-            echo "   client fix, and it is not ours to make."
+            echo "2. *CLI change* — Bitget would have to move \`placeOrder\` into the"
+            echo "   high-risk class. That is a semantic change to their product, not"
+            echo "   a client fix, and it is not ours to make."
             echo "3. *Client phase* — supply the second phase ourselves and label it"
             echo "   as ours, not as Bitget's. \`guard.ts\` already implements the"
             echo "   client half correctly; the venue simply never asks."
             echo
+            echo "**A contaminated result is recorded here on purpose.** An earlier"
+            echo "run of this probe called \`cancelAll\` without \`--confirm\` under"
+            echo "\`--dry-run\` and reported no envelope. \`--dry-run\` returns the"
+            echo "preview BEFORE the confirm gate is evaluated, so that run could not"
+            echo "distinguish \"no gate\" from \"dry-run bypasses the gate\". It was"
+            echo "re-run on the real path for exactly that reason."
+            echo
             echo "\`guard.ts:455-476\` already records the single-phase outcome as a"
             echo "deviation rather than a normal pass, so nothing is being hidden."
             echo
-            echo "- no Bitget credentials were present (checked before any CLI ran)"
-            echo "- every probe carried \`--dry-run\`; nothing was sent"
+            echo "- no Bitget credentials were present (checked before any CLI ran,"
+            echo "  and re-checked immediately before the real-path probe)"
+            echo "- dry-run probes sent nothing; the real-path probe cannot"
+            echo "  authenticate and cancels nothing"
           } >> "$GITHUB_STEP_SUMMARY"
