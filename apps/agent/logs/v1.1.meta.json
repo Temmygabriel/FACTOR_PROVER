@@ -1,0 +1,101 @@
+{
+  "artifact": "v1.1 research phase",
+  "pass_id": "S-V11-1",
+  "generated_at": "2026-09-26T17:21:13.399Z",
+  "policy": {
+    "version": "v1.1",
+    "path": "apps/agent/config/gate_policy.v1.1.json",
+    "sha256": "sha256:5efb3dbbbd1dce3ac5356e66122a88003f3d96cc8bb014156af821a3e55ff854",
+    "locked_at": "2026-09-26T00:00:00Z",
+    "thresholds": {
+      "fdr_level": 0.1,
+      "min_ic": 0.04,
+      "min_t_stat": 2,
+      "min_obs": 100,
+      "require_baseline_beat": true,
+      "sampling": "non_overlapping"
+    },
+    "target_universe": [
+      "BTCUSDT"
+    ],
+    "families_enabled": [
+      "funding_to_pair",
+      "momentum_to_pair",
+      "combined_to_pair"
+    ]
+  },
+  "provenance": {
+    "partitions_sha256": "sha256:a5edfbd0b6154f8e2e12f6f95970958fc2dd5ec321e3ae4389485bd1f150b7f5",
+    "dataset_sha256": "sha256:b0fd26a32fa0314debb6d2784d09c01904d5e173a73b77809cd50558bdf2f02b"
+  },
+  "enumeration": {
+    "size": 320,
+    "by_family": {
+      "funding_to_pair": 160,
+      "momentum_to_pair": 120,
+      "combined_to_pair": 40
+    },
+    "by_signal": {
+      "btc_funding_rate": 80,
+      "eth_funding_rate": 80,
+      "btc_spot_return": 60,
+      "eth_spot_return": 60,
+      "btc_funding_x_spot": 40
+    },
+    "order": "family -> signal -> target -> condition -> forward window -> lookback",
+    "condition_templates": "imported unchanged from src/llm/deterministic.ts",
+    "lookbacks": [
+      30,
+      60,
+      120,
+      240
+    ],
+    "venue_pair_symbols_available": [
+      "BTCUSDT"
+    ],
+    "predicted_structural_kills_btc_spot_to_btcusdt": 60,
+    "bh_bar_at_rank_1": 0.0003125
+  },
+  "stage_1": {
+    "partition": "DISCOVERY",
+    "m": 320,
+    "promoted": 0,
+    "kill_reasons": {
+      "ic_below_floor": 128,
+      "t_stat_below_floor": 107,
+      "insufficient_obs": 71,
+      "baseline_not_beaten": 8,
+      "p_value_exceeds_bh_threshold": 6
+    },
+    "best_by_p_value": {
+      "hypothesis_id": "H-V11-0262",
+      "signal": "eth_spot_return",
+      "condition": {
+        "operator": "lt",
+        "threshold": -0.25,
+        "lookback_minutes": 60
+      },
+      "direction": "negative",
+      "forward_return_minutes": 60,
+      "ic": -0.1528181215284808,
+      "t_stat": -2.6196729711884466,
+      "n_obs": 289,
+      "baseline_ic": -0.15948514934718122,
+      "raw_p_value": 0.009269555183134544,
+      "bh_adjusted_threshold": 0.00031250000000000006,
+      "bh_rank": 1,
+      "decision": "KILL",
+      "reason": "baseline_not_beaten"
+    }
+  },
+  "stage_2": {
+    "validation_read": false,
+    "note": "VALIDATION was NOT read: stage 1 promoted nothing. It remains unspent.",
+    "m": 0,
+    "promoted": 0,
+    "kill_reasons": {}
+  },
+  "locked_test": "NOT READ. Spent by the v1.0 out-of-sample pass on 2026-09-25.",
+  "survivors": [],
+  "stage_1_promotions": []
+}
