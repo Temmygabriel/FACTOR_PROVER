@@ -38,7 +38,7 @@ import {
 import { RTOKEN_SYMBOLS } from '../types.js';
 import { validateProposal } from '../schema/validate.js';
 
-interface ConditionTemplate {
+export interface ConditionTemplate {
   operator: Operator;
   threshold: number;
 }
@@ -47,8 +47,13 @@ interface ConditionTemplate {
  * Threshold/operator pairs chosen from the measured signal distributions, so
  * every one of them selects a non-empty event set by construction. See
  * docs/DATA_FINDINGS.md §9 for the funding-rate distribution these come from.
+ *
+ * EXPORTED so a later research phase can reuse the identical grid. A v1.1 sweep
+ * that re-declared its own thresholds could silently test a different space
+ * while reporting that nothing else changed; importing the same constants makes
+ * that impossible rather than merely unintended.
  */
-const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
+export const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'gt', threshold: 0.00005 },
   { operator: 'gt', threshold: 0.00009 },
   { operator: 'gt', threshold: 0.00002 },
@@ -57,7 +62,7 @@ const FUNDING_CONDITIONS: readonly ConditionTemplate[] = [
 ];
 
 /** Spot returns are in PERCENT. Thresholds below 0.01 are rejected. */
-const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
+export const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'gt', threshold: 0.25 },
   { operator: 'gt', threshold: 0.5 },
   { operator: 'gt', threshold: 0.1 },
@@ -65,9 +70,24 @@ const SPOT_CONDITIONS: readonly ConditionTemplate[] = [
   { operator: 'lt', threshold: -0.5 },
 ];
 
-const LOOKBACKS: readonly number[] = [30, 60, 120, 240];
+export const LOOKBACKS: readonly number[] = [30, 60, 120, 240];
 
-const FAMILIES: readonly ExperimentFamily[] = [
+/**
+ * The families THIS enumerator walks.
+ *
+ * NARROWER THAN `EXPERIMENT_FAMILIES`, ON PURPOSE. That constant lists every
+ * family any policy version may use, which since v1.1 includes the three
+ * `*_pair` families. This enumerator is the production loop's fallback tier,
+ * and the production loop runs the v1.0 policy — so it walks v1.0's three
+ * families and nothing else. Adding a pair family here would silently start
+ * the running agent proposing BTCUSDT, which is a production change with its
+ * own blast radius, not a side effect of a research phase.
+ *
+ * Exported so the tests can assert the property that actually matters — that
+ * the space covers every target for every family the enumerator is *supposed*
+ * to walk — instead of asserting it over the wider union and failing.
+ */
+export const ENUMERATED_FAMILIES: readonly ExperimentFamily[] = [
   'funding_to_rtoken',
   'btc_momentum_to_rtoken',
   'combined_cross_asset',
@@ -129,7 +149,7 @@ export function enumerableSpace(): ProposedHypothesis[] {
 
   const out: ProposedHypothesis[] = [];
 
-  for (const family of FAMILIES) {
+  for (const family of ENUMERATED_FAMILIES) {
     for (const signal of FAMILY_SIGNALS[family]) {
       for (const target of RTOKEN_SYMBOLS) {
         for (const cond of conditionsFor(signal)) {

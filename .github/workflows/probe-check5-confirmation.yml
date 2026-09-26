@@ -1,0 +1,233 @@
+name: Probe CHECK_5 confirmation contract
+
+# Answers ONE question, and it is the question the v1.1 directive asked:
+#
+#   What exactly would be required to make the intended TWO-PHASE confirmation
+#   actually occur, using the current Bitget Agent Hub CLI?
+#
+# WHY THIS IS NOT ALREADY ANSWERED. `apps/agent/src/execution/agentHub.ts`
+# (lines 502-509) records that `bgc discover --tool order --action place`
+# reports `requiresConfirm: false`, and that the dry-run probes returned no
+# `confirmationRequired`. That is a measurement of ONE action. It does not
+# establish whether the CLI implements a confirm contract SOMEWHERE ELSE — on a
+# different tool, a different action, or behind a different flag. Those are
+# different findings with different consequences:
+#
+#   - no confirm contract anywhere  -> CHECK_5 cannot be satisfied by any flag
+#                                      change; it needs a CLI version that adds
+#                                      one, or a different integration path.
+#   - a contract on another action  -> CHECK_5 can be satisfied by routing
+#                                      placement through that action.
+#
+# So this sweeps the WHOLE surface rather than re-probing the one action the
+# code already checked, and greps the whole thing for confirm semantics.
+#
+# WHY IT IS SAFE. Identical to verify-agent-hub.yml: no Bitget credentials are
+# configured, checked BEFORE any CLI runs, and every order-shaped probe carries
+# --dry-run and --paper-trading. Nothing here can reach an account.
+#
+# READ THE OUTPUT, CHANGE THE CODE. If a confirm contract exists anywhere, the
+# step summary names the tool and action it lives on.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Sweep every tool and action for confirm semantics
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Confirm no Bitget credentials are reachable
+        run: |
+          leaked=0
+          for v in BITGET_API_KEY BITGET_API_SECRET BITGET_API_PASSPHRASE BITGET_API_KEY_ID; do
+            if [ -n "${!v:-}" ]; then
+              echo "::error::$v is set in this job — the probes are not credential-free"
+              leaked=1
+            fi
+          done
+          [ "$leaked" -eq 0 ] || exit 1
+          for f in "$HOME/.bgc/config.json" "$HOME/.bitget/credentials"; do
+            if [ -e "$f" ]; then
+              echo "::error::$f exists — the probes would be authenticated"
+              exit 1
+            fi
+          done
+          echo "confirmed: no Bitget credentials, in the environment or on disk"
+
+      - name: Install the CLI outside the repository
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$RUNNER_TEMP/bgc-toolchain"
+          mkdir -p "$TOOLCHAIN"
+          cd "$TOOLCHAIN"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund @bitget-ai/bitget-agent-cli 2>&1 | tail -5
+          echo "--- resolved version ---"
+          node -p "require('$TOOLCHAIN/node_modules/@bitget-ai/bitget-agent-cli/package.json').version"
+          echo "TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Sweep the discovery surface
+        run: |
+          set -uo pipefail
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+          OUT="$RUNNER_TEMP/discovery"
+          mkdir -p "$OUT"
+
+          echo "=== top-level --version ==="
+          "$BGC" --version 2>&1 || true
+
+          # The tool list is the input to the sweep, so it has to be machine
+          # readable. If `discover --json` is unsupported the fallback below is
+          # the plain listing and the sweep is driven by a fixed list instead.
+          echo ""
+          echo "=== discover (raw) ==="
+          "$BGC" discover 2>&1 | tee "$OUT/discover.raw" || true
+
+          echo ""
+          echo "=== discover --json ==="
+          if "$BGC" discover --json > "$OUT/discover.json" 2>"$OUT/discover.json.err"; then
+            echo "json form supported"
+            head -c 1200 "$OUT/discover.json"; echo
+          else
+            echo "json form NOT supported:"
+            cat "$OUT/discover.json.err"
+            echo "[]" > "$OUT/discover.json"
+          fi
+
+          # Extract tool names from whichever form worked.
+          if [ -s "$OUT/discover.json" ] && node -e "
+            const d=require('$OUT/discover.json');
+            const arr=Array.isArray(d)?d:(d.tools||d.data||[]);
+            const names=arr.map(t=>typeof t==='string'?t:(t.name||t.tool)).filter(Boolean);
+            require('fs').writeFileSync('$OUT/tools.txt', names.join('\n'));
+            process.exit(names.length?0:1);
+          " 2>/dev/null; then
+            echo "tools extracted from json: $(wc -l < "$OUT/tools.txt")"
+          else
+            grep -oE '^[[:space:]]*[a-z_]+[a-z_0-9]*' "$OUT/discover.raw" \
+              | tr -d ' ' | sort -u > "$OUT/tools.txt" || true
+            echo "tools extracted from raw text: $(wc -l < "$OUT/tools.txt")"
+          fi
+          echo "--- tool list ---"
+          cat "$OUT/tools.txt"
+
+          echo ""
+          echo "=== per-tool action sweep ==="
+          : > "$OUT/all.txt"
+          while read -r tool; do
+            [ -n "$tool" ] || continue
+            echo "" | tee -a "$OUT/all.txt"
+            echo "########## TOOL: $tool ##########" | tee -a "$OUT/all.txt"
+            "$BGC" discover --tool "$tool" 2>&1 | tee -a "$OUT/all.txt" || true
+
+            # Every action this tool reports, so each one can be asked for its
+            # own parameter list. This is where a per-action `requiresConfirm`
+            # would show up.
+            for action in $(grep -oE '"?(action|name)"?[": ]+"?[a-z_]+' "$OUT/all.txt" \
+                            | grep -oE '[a-z_]+$' | sort -u); do
+              echo "" | tee -a "$OUT/all.txt"
+              echo "----- $tool / $action -----" | tee -a "$OUT/all.txt"
+              "$BGC" discover --tool "$tool" --action "$action" 2>&1 | tee -a "$OUT/all.txt" || true
+            done
+          done < "$OUT/tools.txt"
+
+      - name: Grep the whole surface for confirm semantics
+        run: |
+          set -uo pipefail
+          OUT="$RUNNER_TEMP/discovery"
+
+          echo "=== every line mentioning confirm, case-insensitive ==="
+          grep -in "confirm" "$OUT/all.txt" | tee "$RUNNER_TEMP/confirm-lines.txt" || echo "(no matches at all)"
+
+          echo ""
+          echo "=== does ANY action report a confirm requirement as TRUE? ==="
+          # A two-phase contract would have to say so somewhere in the metadata.
+          # Both spellings are checked because the code that reads this
+          # (agentHub.ts) looks for `confirmationRequired`, while the discovery
+          # output it quoted uses `requiresConfirm`.
+          if grep -iE '"(requiresConfirm|confirmationRequired|require_confirm|needsConfirm)"[[:space:]]*:[[:space:]]*true' \
+               "$OUT/all.txt" "$OUT/discover.raw" 2>/dev/null; then
+            echo ">>> FOUND a true confirm requirement (see above)"
+            echo "FOUND=true" >> "$GITHUB_ENV"
+          else
+            echo ">>> no action anywhere reports a true confirm requirement"
+            echo "FOUND=false" >> "$GITHUB_ENV"
+          fi
+
+          echo ""
+          echo "=== the false ones, for contrast ==="
+          grep -iE '"(requiresConfirm|confirmationRequired|require_confirm|needsConfirm)"[[:space:]]*:[[:space:]]*false' \
+            "$OUT/all.txt" "$OUT/discover.raw" 2>/dev/null | sort -u || echo "(none)"
+
+          echo ""
+          echo "=== any --confirm flag documented in any parameter list? ==="
+          grep -iE '(^|[^-])confirm' "$OUT/all.txt" | grep -iE 'flag|param|option|--' | sort -u || echo "(none)"
+
+      - name: Probe whether place itself changes behaviour under --confirm
+        # The one thing the earlier workflow did NOT isolate: whether passing
+        # --confirm changes what the CLI SAYS it will do, as opposed to merely
+        # being tolerated. A two-phase contract would make the reply differ.
+        run: |
+          set -uo pipefail
+          BGC="$TOOLCHAIN/node_modules/.bin/bgc"
+
+          probe() {
+            label="$1"; shift
+            echo ""
+            echo "=== $label ==="
+            echo "\$ $*"
+            set +e
+            "$@" 2>&1
+            echo "--- exit code: $?"
+            set -e
+          }
+
+          probe "order place WITHOUT --confirm (dry run)" \
+            "$BGC" order --action place --category SPOT --symbol BTCUSDT \
+              --side sell --orderType market --qty 0.001 \
+              --paper-trading --dry-run
+
+          probe "order place WITH --confirm (dry run)" \
+            "$BGC" order --action place --category SPOT --symbol BTCUSDT \
+              --side sell --orderType market --qty 0.001 \
+              --paper-trading --dry-run --confirm
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### CHECK_5 confirmation probe"
+            echo
+            echo "Question: what would be required to make the intended two-phase"
+            echo "confirmation occur with the current Agent Hub CLI?"
+            echo
+            if [ "${FOUND:-unknown}" = "true" ]; then
+              echo "**A confirm requirement was found on some action.** See the"
+              echo "grep step — that action is the routing target for CHECK_5."
+            elif [ "${FOUND:-unknown}" = "false" ]; then
+              echo "**No action on the swept surface reports a true confirm"
+              echo "requirement.** With this CLI, \`--confirm\` is accepted but is"
+              echo "not a two-phase contract, so the confirm leg of Execution"
+              echo "Guard CHECK 5 cannot be satisfied by a flag change. It would"
+              echo "need a CLI version that implements one, or a different"
+              echo "integration path."
+            else
+              echo "Probe did not reach the verdict step — read the job log."
+            fi
+            echo
+            echo "- no Bitget credentials were present (checked before any CLI ran)"
+            echo "- every order-shaped probe carried \`--dry-run\` and \`--paper-trading\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -52,14 +52,96 @@ export const RTOKEN_SYMBOLS = [
 
 export type RTokenSymbol = (typeof RTOKEN_SYMBOLS)[number];
 
+/**
+ * Targets that are NOT tokenised equities but that the demo venue will actually
+ * accept an order for.
+ *
+ * WHY THIS LIST EXISTS SEPARATELY FROM `RTOKEN_SYMBOLS`. Every rToken is refused
+ * by the Bitget demo venue before any sizing or balance check —
+ * `papTradingService not support RWA order validation error` — so a factor
+ * promoted against an rToken target can never be executed, no matter what the
+ * statistics say. That is a property of the venue, not of the factor.
+ *
+ * `BTCUSDT` is the ONLY member, and it is here for one reason that is disclosed
+ * rather than implied: it is the one instrument this project has verified its
+ * execution path can actually place an order on (order id 1485970832289546240,
+ * and a second accepted placement before it). ETHUSDT is deliberately absent —
+ * it is a reference coin whose candles this system reads, and assuming its
+ * venue reachability would repeat exactly the mistake this list exists to
+ * prevent.
+ *
+ * ADDING A NAME HERE DOES NOT WIDEN ANY SEARCH. The target universe is selected
+ * by the ACTIVE POLICY, not by this constant: a policy that does not declare
+ * `target_universe` gets `RTOKEN_SYMBOLS`, which is what gate_policy.json does,
+ * so v1.0's five enforcement layers are unaffected. See `targetsForPolicy` in
+ * config.ts.
+ */
+export const VENUE_PAIR_SYMBOLS = ['BTCUSDT'] as const;
+
+export type VenuePairSymbol = (typeof VENUE_PAIR_SYMBOLS)[number];
+
+/**
+ * Anything a hypothesis may name as its target, across every policy version.
+ *
+ * The union is deliberately wider than any single policy allows. What a given
+ * research phase may actually target is `targetsForPolicy(policy)`.
+ */
+export type TargetSymbol = RTokenSymbol | VenuePairSymbol;
+
+/**
+ * Narrow a TargetSymbol back to an RTokenSymbol, or throw.
+ *
+ * WHY THIS EXISTS, AND WHY THE PRODUCTION TYPES STAY NARROW. Widening
+ * `FactorHypothesis.target` to `TargetSymbol` let the v1.1 research phase test
+ * BTCUSDT. It did NOT give the running session loop a pair universe: the loop
+ * runs the v1.0 policy, whose enumerator offers rTokens only, so it cannot
+ * propose a pair target today.
+ *
+ * The types that describe what the RUNNING SYSTEM PRODUCES — `PromotedFactor`,
+ * `HypothesisShape`, the breaker's degeneracy window — therefore stay narrowed
+ * to `RTokenSymbol`. Widening them would make them claim a target universe the
+ * loop does not have: an API that said `target: string` while the loop could
+ * only ever emit rTokens would be over-claiming, not future-proofing.
+ *
+ * So the narrowing is explicit and happens exactly where a proposed hypothesis
+ * crosses into those contract types. If the loop is ever switched to a pair
+ * universe, this throws at the boundary instead of silently writing a target
+ * the contract cannot represent — a loud failure at the right place, rather
+ * than a quiet widening everywhere.
+ */
+export function requireRTokenTarget(target: TargetSymbol, where: string): RTokenSymbol {
+  if ((RTOKEN_SYMBOLS as readonly string[]).includes(target)) return target as RTokenSymbol;
+  throw new Error(
+    `${where}: the production contract cannot represent target "${target}". ` +
+      `The session loop runs the v1.0 policy, whose target universe is the rToken list. ` +
+      `If a research phase is being promoted to production, the contract types ` +
+      `(PromotedFactor, HypothesisShape, the breaker's degeneracy window) must be ` +
+      `widened to TargetSymbol deliberately, not by this helper being removed.`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Experiment families — the bounded search space.
 // ---------------------------------------------------------------------------
+//
+// THE FIRST THREE ARE v1.0's, AND THEY ARE UNCHANGED. Their names say `rtoken`
+// because their target universe is the rToken list; that remains true of every
+// entry v1.0 ever wrote, and renaming them would reinterpret the published
+// record rather than describe it.
+//
+// THE LAST THREE ARE v1.1's. They are separate names rather than a widened
+// meaning for the first three, because a family name is part of the durable
+// record: an entry reading `funding_to_rtoken` must keep meaning a funding
+// signal tested against a tokenised equity. v1.1 tests against a venue pair, so
+// it gets its own names and its own entries.
 
 export const EXPERIMENT_FAMILIES = [
   'funding_to_rtoken',
   'btc_momentum_to_rtoken',
   'combined_cross_asset',
+  'funding_to_pair',
+  'momentum_to_pair',
+  'combined_to_pair',
 ] as const;
 
 export type ExperimentFamily = (typeof EXPERIMENT_FAMILIES)[number];
@@ -69,6 +151,9 @@ export const FAMILY_SIGNALS: Record<ExperimentFamily, readonly SignalId[]> = {
   funding_to_rtoken: ['btc_funding_rate', 'eth_funding_rate'],
   btc_momentum_to_rtoken: ['btc_spot_return', 'eth_spot_return'],
   combined_cross_asset: ['btc_funding_x_spot'],
+  funding_to_pair: ['btc_funding_rate', 'eth_funding_rate'],
+  momentum_to_pair: ['btc_spot_return', 'eth_spot_return'],
+  combined_to_pair: ['btc_funding_x_spot'],
 };
 
 /**
@@ -95,6 +180,12 @@ export const FAMILY_WINDOW_BOUNDS: Record<ExperimentFamily, { min: number; max: 
   funding_to_rtoken: { min: 15, max: 120 },
   btc_momentum_to_rtoken: { min: 30, max: 120 },
   combined_cross_asset: { min: 60, max: 120 },
+  // v1.1 mirrors its v1.0 counterparts exactly. The windows are NOT widened:
+  // the 120-minute cap is a preregistered power limit derived from measured
+  // observation counts, and moving it would be the loosening v1.1 forbids.
+  funding_to_pair: { min: 15, max: 120 },
+  momentum_to_pair: { min: 30, max: 120 },
+  combined_to_pair: { min: 60, max: 120 },
 };
 
 /** Every family's window cap, for validator and UI copy. */
@@ -149,7 +240,7 @@ export interface FactorHypothesis {
     lookback_minutes: number;
   };
 
-  target: RTokenSymbol;
+  target: TargetSymbol;
   direction: Direction;
   /** Integer, bounded per family. */
   forward_return_minutes: number;
@@ -246,7 +337,7 @@ export interface LLMContext {
   promoted_factors: Array<{
     factor_id: string;
     signal: SignalId;
-    target: RTokenSymbol;
+    target: TargetSymbol;
     window_minutes: number;
     direction: Direction;
     ic: number;
@@ -261,7 +352,7 @@ export interface LLMContext {
   recent_kills: Array<{
     factor_id: string;
     signal: SignalId;
-    target: RTokenSymbol;
+    target: TargetSymbol;
     kill_reason: KillReason;
     ic: number;
     t_stat: number;

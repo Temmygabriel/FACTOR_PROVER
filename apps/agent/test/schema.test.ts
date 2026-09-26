@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { formatHypothesisId, stampHypothesis, validateProposal } from '../src/schema/validate.js';
-import { FAMILY_WINDOW_BOUNDS, MAX_LOOKBACK_MINUTES } from '../src/types.js';
+import { FAMILY_SIGNALS, FAMILY_WINDOW_BOUNDS, MAX_LOOKBACK_MINUTES } from '../src/types.js';
 import type { ProposedHypothesis } from '../src/types.js';
 
 /** A proposal that passes, so each case only names the field it breaks. */
@@ -348,13 +348,21 @@ describe('forward windows are bounded per family', () => {
 
   it('accepts both ends of each family’s range', () => {
     for (const [family, bounds] of Object.entries(FAMILY_WINDOW_BOUNDS)) {
-      const signal = family === 'funding_to_rtoken' ? 'btc_funding_rate' : family === 'btc_momentum_to_rtoken' ? 'btc_spot_return' : 'btc_funding_x_spot';
-      const threshold = signal === 'btc_spot_return' ? 0.25 : 0.00005;
+      // The signal is taken from the family's own licence rather than a
+      // hardcoded chain. The chain knew only v1.0's three names and fell
+      // through to `btc_funding_x_spot` for anything else — so once the v1.1
+      // `*_pair` families joined FAMILY_WINDOW_BOUNDS, this test was feeding
+      // `funding_to_pair` a signal it does not permit and failing for a reason
+      // that had nothing to do with window bounds.
+      const signal = FAMILY_SIGNALS[family as keyof typeof FAMILY_SIGNALS][0]!;
+      // Mirrors `conditionsFor` in the enumerator: a funding leg takes the
+      // funding thresholds, every other signal takes the spot ones.
+      const threshold = signal.includes('funding') ? 0.00005 : 0.25;
       for (const forward of [bounds.min, bounds.max]) {
         const result = validateProposal(
           proposal({
             signal,
-            experiment_family: family,
+            experiment_family: family as keyof typeof FAMILY_SIGNALS,
             condition: { operator: 'gt', threshold, lookback_minutes: 60 },
             forward_return_minutes: forward,
           }),

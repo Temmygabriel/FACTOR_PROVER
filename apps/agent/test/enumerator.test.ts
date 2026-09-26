@@ -19,6 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  ENUMERATED_FAMILIES,
   enumerateHypothesis,
   enumerableSpace,
   enumerableSpaceNaturalOrder,
@@ -55,8 +56,13 @@ describe('the enumerable space', () => {
   });
 
   it('contains every target, for every permitted family/signal pair', () => {
+    // Scoped to the families THIS enumerator walks, not to every family any
+    // policy version may use. `FAMILY_SIGNALS` also carries the v1.1 `*_pair`
+    // families, which belong to the research phase's sweep — asserting that the
+    // production fallback enumerates them too would be asserting a production
+    // change nobody made.
     const pairs = new Set(SPACE.map(key));
-    for (const family of Object.keys(FAMILY_SIGNALS) as Array<keyof typeof FAMILY_SIGNALS>) {
+    for (const family of ENUMERATED_FAMILIES) {
       for (const signal of FAMILY_SIGNALS[family]) {
         for (const target of RTOKEN_SYMBOLS) {
           expect(pairs.has(`${signal}|${target}|${family}`)).toBe(true);
