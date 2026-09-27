@@ -61,6 +61,37 @@ its own, and the committed log is the proof.
 narrower and checkable: the protocol ran, the arithmetic is in the record, and it killed 200
 of 200 ideas — including one it had briefly liked.
 
+### What happened to that one afterwards
+
+Two things, and both are results.
+
+**It failed the reserved out-of-sample test.** `H-0006` was re-evaluated on `LOCKED_TEST`, a
+partition the loop cannot reach, and was killed there too —
+[`logs/locked-test.jsonl`](apps/agent/logs/locked-test.jsonl), one entry, reason
+`ic_below_floor`. The partition was spent once and never reused. So the promotion did not
+merely get demoted by arithmetic: it did not survive data it had never seen. That is the
+test the whole split exists to make possible, and the project reports it against its own
+best candidate.
+
+**Then a second, larger phase was run — and it also found nothing.** v1.1 was a
+preregistered sweep of **320 hypotheses** targeting `BTCUSDT`, the one instrument this
+project has verified its execution path can actually place an order on. The policy was
+written and hashed **before** any result was seen (`sha256:5efb3dbb…`), the earlier
+partitions and the spent `LOCKED_TEST` were left untouched, and no threshold was loosened to
+produce a promotion. Result: **320 tested, 0 survivors** —
+[`logs/v1.1.jsonl`](apps/agent/logs/v1.1.jsonl), with the counts and hashes in
+[`logs/v1.1.meta.json`](apps/agent/logs/v1.1.meta.json). `VALIDATION`, the only partition
+never read by any recorded result, is still unspent.
+
+The strongest raw candidate in that sweep (`H-V11-0262`) reached `p = 9.27e-3` against a
+rank-1 Benjamini-Hochberg bar of `3.125e-4` — an order of magnitude short — and its own
+naive baseline beat it anyway.
+
+**Two sweeps, 520 hypotheses, zero survivors, no threshold moved.** A system that can only
+ever report this is not obviously useful. A system that reports it *about itself*, with the
+hashes and the spent holdout to prove the rules were fixed in advance, is the thing this
+project is actually claiming.
+
 ---
 
 ## How it works
@@ -163,6 +194,38 @@ after a quiet period may take 30–60 seconds. That is the free tier, not a faul
 
 ---
 
+## The execution path is real, and it is bounded
+
+The statistics are the point, but the pipeline does reach a venue. Every record is committed
+at [`apps/agent/logs/paper-live.jsonl`](apps/agent/logs/paper-live.jsonl), captured live
+rather than reconstructed — the Execution Guard and the order-intent builder are the
+production modules, and `CHECK 5` invoked the real `bgc` binary, which signed the request.
+
+| | |
+|---|---|
+| Accepted by Bitget demo | **2 orders**, `BTCUSDT` sell — ids `1485970832289546240`, `1485982824169586688` |
+| Refused by the venue | **7 orders**, all `RGOOGLUSDT`, verbatim error below |
+| Environment | `--paper-trading` on every call; no real money exists in this account |
+
+The rToken refusal is the venue's, not ours:
+
+```
+HTTP 400 from Bitget: papTradingService not support RWA order validation error
+```
+
+That is Bitget's paper-trading service declining tokenised equities as an instrument class.
+It arrives before any sizing or balance logic runs, and it is why the accepted orders are
+`BTCUSDT`: the project found the one instrument its execution path could actually reach and
+then targeted its research there.
+
+**What the accepted orders are not.** They are venue checks, not factor-generated trades. The
+only factor that ever reached the Guard was `H-0006`, and it was refused — that refusal is
+the first record in the file. So the honest summary of the execution leg is: the path works,
+it has been proven to work on a real order id, and **no promoted factor has ever filled a
+trade**, because no factor has survived to be traded.
+
+---
+
 ## Disclosures
 
 These are stated up front because a project whose entire claim is honesty about its own
@@ -173,6 +236,14 @@ results does not get to be quiet about its own limits.
   enumerator in `src/llm/deterministic.ts`. The statistical pipeline, the gate, the log and
   the hash chain are the real ones and are unchanged by which generator proposed the
   hypotheses. The deployed service reports which generator is active in `/api/status`.
+- **There are two committed records, and `generator` on every entry says which is which.**
+  `decisions.jsonl` is the deterministic session — 201 entries, all `deterministic`. The
+  **LLM-proposed** record is [`decisions-llm.jsonl`](apps/agent/logs/decisions-llm.jsonl):
+  **60 entries, all `groq`**, produced with a real provider key. It contains **60 KILLs and
+  0 PROMOTEs.** So the model's proposals were tested, were recorded, and were rejected on
+  the same bar as everything else — which is the thesis working, not a gap in it. The
+  deterministic fallback exists so the loop still runs with no key configured; it is not a
+  substitute for the model, and the two are never mixed in one file.
 - **No real money is involved and none can be.** The execution guard refuses every order
   unless `BITGET_PAPER_TRADING=true` exactly, and that check runs first.
 - **An empty session is not an empty project.** `/api/status` reports what *this process* has
@@ -184,6 +255,17 @@ results does not get to be quiet about its own limits.
   historical OI endpoint returns `40404 Request URL NOT FOUND`. The `oi_shock_to_rtoken`
   family was removed rather than approximated with data that does not exist. See
   [`docs/DATA_FINDINGS.md`](docs/DATA_FINDINGS.md).
+- **Two defects were found by auditing this project's own output, and both are published.**
+  A baseline-alignment bug in the backtest engine was discovered while checking a prediction
+  that appeared to fail; it was measured across all 520 entries and **changed no verdict in
+  either research phase**, and the published numbers were **not** quietly rewritten —
+  [`logs/BASELINE_ALIGNMENT_ERRATA.md`](apps/agent/logs/BASELINE_ALIGNMENT_ERRATA.md). And
+  the confirmation leg of the Execution Guard cannot fire against this venue, because the
+  CLI's confirm gate covers destructive operations only and order placement is not one of
+  them — [`docs/CHECK5_CONFIRMATION_FINDING.md`](docs/CHECK5_CONFIRMATION_FINDING.md), which
+  also records a latent parser defect left unfixed on purpose. A project arguing that a
+  system must not grade its own homework has to publish what it finds when it checks its
+  own.
 
 ---
 
@@ -219,9 +301,10 @@ reproducibility claim is therefore checked by CI rather than asserted in prose.
 ```
 apps/agent/          the loop: generation, backtest, gate, guard, log, REST + SSE API
 apps/agent/config/   gate_policy.json and partitions.json — the preregistered protocol
-apps/agent/logs/     decisions.jsonl — the hash-chained research record
+apps/agent/logs/     the committed records: decisions.jsonl (deterministic), decisions-llm.jsonl
+                     (LLM-proposed), v1.1.jsonl, locked-test.jsonl, paper-live.jsonl, errata
 apps/web/            Next.js dashboard — leaderboard, decision log, live feed, provenance
-docs/                DATA_FINDINGS.md, TRY_IT.md
+docs/                DATA_FINDINGS.md, CHECK5_CONFIRMATION_FINDING.md, TRY_IT.md
 PROGRESS.md          the build record, including every finding and correction
 ```
 
