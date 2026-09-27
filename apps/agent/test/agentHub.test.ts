@@ -321,13 +321,30 @@ describe('the confirm flag', () => {
     expect(client().argv(ORDER, true)).toContain('--confirm');
   });
 
-  it('is recorded as NOT being the CLI\'s two-phase contract', () => {
-    // `bgc discover --tool order --action place` reports requiresConfirm:false
-    // for place, and the dry-run probes returned no confirmationRequired. So
-    // the CLI places on the first call and would never ask. Passing --confirm
-    // is tolerated (verified) but no safety property depends on it, and the
-    // comment in buildArgv says so. If that comment is ever deleted, this test
-    // is the thing that still records the finding.
+  it('parses a place reply with no confirmationRequired as single-phase', () => {
+    // WHAT THIS DOES AND DOES NOT ESTABLISH. It is a PARSER test: given a reply
+    // that carries no `confirmationRequired`, `parse` must report false rather
+    // than inherit a default.
+    //
+    // It is NOT evidence about the CLI, and an earlier version of this test
+    // claimed it was — it said the CLI "places on the first call and would never
+    // ask". That is false. `order --action cancelAll` without `--confirm`
+    // returns `{"confirmationRequired":true,"riskLevel":"high","hint":"Re-call
+    // with confirm: true to proceed, or dryRun: true to preview the request."}`
+    // — the CLI's two-phase contract, live, in its own words.
+    //
+    // The trap was reading a DRY-RUN reply as evidence about the gate. `--dry-run`
+    // returns the preview before the gate is evaluated, which the CLI's own hint
+    // confirms by offering `dryRun: true` as an alternative to confirming. So a
+    // dry-run reply showing no `confirmationRequired` was never evidence that no
+    // gate exists.
+    //
+    // What IS true is narrower: the gate sits on destructive-or-irreversible
+    // operations by the CLI's own `riskLevel` (placeOrder `write`; cancelAllOrders
+    // and closeAllPositions `high`), and placing is reversible, so `place` is
+    // outside the class the gate exists for. `--confirm` is inert for `place`:
+    // with and without it the reply is identical modulo the random requestTime
+    // and clientOid. See the buildArgv comment, which carries the measurements.
     const dryRun = client().parse(
       JSON.stringify({
         endpoint: 'POST /api/v3/trade/place-order',
@@ -337,6 +354,30 @@ describe('the confirm flag', () => {
     );
     expect(dryRun.confirmationRequired).toBe(false);
   });
+
+  /* DELIBERATELY NOT TESTED HERE: the real confirmationRequired envelope.
+   *
+   * The CLI sends it NESTED, under `data`:
+   *
+   *   {"endpoint":"POST /api/v3/trade/cancel-symbol-order",
+   *    "data":{"confirmationRequired":true,"operationId":"cancelAllOrders",
+   *            "riskLevel":"high",
+   *            "message":"\"cancelAllOrders\" is destructive or irreversible and
+   *                       was not executed.",
+   *            "hint":"Re-call with confirm: true to proceed, or dryRun: true to
+   *                    preview the request."}}
+   *
+   * `parse` reads `parsed['confirmationRequired']` at the TOP LEVEL (agentHub.ts
+   * line 773-776), so it does not see this. A test asserting the correct reading
+   * would fail, and a test asserting the current reading would pin a defect as
+   * if it were intended. Neither belongs in the suite, so the finding is
+   * recorded in docs/CHECK5_CONFIRMATION_FINDING.md instead, with this envelope
+   * verbatim.
+   *
+   * It is latent rather than live: `place` is not confirm-gated, so this
+   * envelope is never returned to the placement path. It matters because it
+   * means CHECK 5's phase 1 cannot fire even in the case it was written for.
+   */
 });
 
 describe("the CLI's real envelopes, copied from run 35264648127", () => {

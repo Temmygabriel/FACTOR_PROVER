@@ -499,18 +499,50 @@ export class BgcAgentHubClient {
    * recording too: the failure was not uniform, so "it was all wrong" would be
    * as misleading as "it was fine".
    *
-   * `--confirm` IS kept, and it is NOT the CLI's two-phase contract. Discovery
-   * reports `requiresConfirm: false` for `place`, and the dry-run probes
-   * returned no `confirmationRequired` — so the CLI places on the first call and
-   * would never ask. The two-phase confirm this project relies on is Execution
-   * Guard CHECK 5, which is ours, not the CLI's. Passing `--confirm` is
-   * harmless (verified: the flag is accepted on `place`) and it keeps the
-   * command line self-describing, but no safety property here depends on it,
-   * and nothing should be written that implies otherwise.
+   * `--confirm` IS kept, but it changes nothing, and this comment used to say
+   * something stronger and false. It claimed the CLI "places on the first call
+   * and would never ask" because discovery reports `requiresConfirm: false` for
+   * `place` and the dry-run probes returned no `confirmationRequired`.
    *
-   * The confirm flag is applied LAST and is never omitted: an unconfirmed call
-   * must be visibly unconfirmed on the command line, so that a log of the argv
-   * shows which phase it was.
+   * THE CLI DOES HAVE A TWO-PHASE CONTRACT, AND IT IS LIVE. Measured, not
+   * inferred — `order --action cancelAll --category SPOT` with no `--confirm`
+   * returns, verbatim:
+   *
+   *   {"operationId":"cancelAllOrders","riskLevel":"high",
+   *    "confirmationRequired":true,
+   *    "message":"\"cancelAllOrders\" is destructive or irreversible and was not
+   *    executed.",
+   *    "hint":"Re-call with confirm: true to proceed, or dryRun: true to preview
+   *    the request."}
+   *
+   * That is exactly the envelope `guard.ts` phase 1 waits for, and the hint is
+   * the two-phase flow stated in the CLI's own words.
+   *
+   * WHAT IS ACTUALLY TRUE is narrower, and it is a fact about the venue's
+   * classification rather than about the CLI's capability. The gate sits on
+   * destructive-or-irreversible operations, per the CLI's own `riskLevel`:
+   *
+   *   placeOrder        riskLevel: write   confirm-gated: no
+   *   cancelAllOrders   riskLevel: high    confirm-gated: yes
+   *   closeAllPositions riskLevel: high    confirm-gated: yes
+   *
+   * Placing is reversible — it can be cancelled — so it is outside the class
+   * the gate exists for. That is coherent, not a defect.
+   *
+   * THE OLD DRY-RUN EVIDENCE WAS CONTAMINATED and is why the wrong conclusion
+   * was reached. `--dry-run` returns the preview BEFORE the gate is evaluated;
+   * the CLI's own hint above says as much by offering `dryRun: true` as an
+   * ALTERNATIVE to confirming. So "a dry run returned no confirmationRequired"
+   * was never evidence that the gate is absent, and it was read as if it were.
+   *
+   * CONSEQUENCE FOR THIS FILE. `--confirm` is inert for `place`: with and
+   * without it the reply is identical once the random requestTime and clientOid
+   * are stripped. It is applied LAST and never omitted so that a log of the
+   * argv shows which phase a call was, but no safety property depends on it.
+   * The two-phase confirm this project actually relies on is Execution Guard
+   * CHECK 5 — which is ours, and which cannot fire against this venue, because
+   * the venue never asks. `guard.ts` records that as a deviation rather than as
+   * a normal pass.
    */
   private buildArgv(order: OrderIntent, opts: { confirm: boolean }, precision: SpotPrecision): string[] {
     const argv = [
