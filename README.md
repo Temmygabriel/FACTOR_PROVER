@@ -204,8 +204,19 @@ production modules, and `CHECK 5` invoked the real `bgc` binary, which signed th
 | | |
 |---|---|
 | Accepted by Bitget demo | **2 orders**, `BTCUSDT` sell — ids `1485970832289546240`, `1485982824169586688` |
-| Refused by the venue | **7 orders**, all `RGOOGLUSDT`, verbatim error below |
+| Refused by the venue | **every `RGOOGLUSDT` attempt**, verbatim error below |
 | Environment | `--paper-trading` on every call; no real money exists in this account |
+| Cadence | Appended **daily** by `.github/workflows/live-execution.yml` — a trail, not a snapshot |
+
+The counts are deliberately not hardcoded: the record grows on a schedule, so any fixed
+number in this file would be wrong the moment it was written. Read the file for the current
+state.
+
+The daily cadence is itself part of the claim. The Agentic Trading track asks for a
+paper-trading record **actually run during the competition period**; one run on one day is an
+anecdote, a consecutive daily trail is a record. Each run places the order the committed
+decision log implies — `H-0006`'s `RGOOGLUSDT` buy — through the production guard and the
+real `bgc` binary, and appends whatever the venue says.
 
 The rToken refusal is the venue's, not ours:
 
