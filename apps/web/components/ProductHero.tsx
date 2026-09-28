@@ -14,6 +14,17 @@
  * phrase is accurate and useless as a first sentence — it names the
  * implementation. "AI that tests trading ideas before they reach the market"
  * names what a reader gets.
+ *
+ * WHY THE SUBHEAD NAMES rTOKENS AND NAMES WHO DECIDES. Two facts a reader needs
+ * before anything else, and neither is inferable from the headline. First, what
+ * the ideas are ABOUT: this is a cross-asset system, so the subject is crypto
+ * signals predicting tokenised-equity returns, not crypto-to-crypto. Without it
+ * "trading ideas" reads as a generic bot, and the rToken framing — which is the
+ * whole reason the execution leg hits the venue limit it hits — arrives later as
+ * a surprise. Second, who holds the authority: the AI proposes, the gate decides.
+ * Stated here, it is the frame for everything below; left out, a reader assumes
+ * the model is scoring itself, which is the one thing this product exists to
+ * contradict.
  */
 
 import Link from 'next/link';
@@ -51,8 +62,10 @@ export function ProductHero() {
       </h1>
 
       <p className="mt-6 max-w-[62ch] text-body-lg text-ink-light">
-        Factor Prover generates structured trading ideas, tests them against Bitget market
-        data, and applies fixed statistical rules before an idea can move forward.
+        It tests relationships between crypto market signals — funding rates, spot momentum —
+        and Bitget tokenised-equity (rToken) returns. An AI proposes each idea as a structured
+        hypothesis, frozen Bitget data tests it, and a deterministic gate with thresholds fixed
+        in advance decides whether it survives.
       </p>
 
       {/*
