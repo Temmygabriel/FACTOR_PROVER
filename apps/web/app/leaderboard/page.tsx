@@ -153,7 +153,18 @@ function BenchRatio({
         </div>
       ) : null}
 
-      <p className="mt-4 max-w-[80ch] text-label text-ink">That ratio is the product working.</p>
+      {/*
+        This line used to read "That ratio is the product working." — which asks a
+        judge to accept that killing everything IS the success condition, and so
+        invites the reading that the gate can never say yes. It can, and the
+        evidence screen shows the hypothesis that cleared it before the bar
+        tightened. What is true is narrower and checkable: the bar is written
+        before testing and is not moved to produce a promotion. State that.
+      */}
+      <p className="mt-4 max-w-[80ch] text-label text-ink">
+        This shape is by design: one preregistered bar applies to every idea, and an idea that
+        does not clear it is rejected. The bar is not moved to produce a promotion.
+      </p>
     </section>
   );
 }

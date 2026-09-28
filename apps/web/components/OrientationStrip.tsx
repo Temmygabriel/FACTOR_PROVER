@@ -6,14 +6,32 @@
  * screen is built to make that legible to someone already reading; this strip has
  * to make it legible to someone who has just arrived and is deciding in seconds
  * whether to keep reading. So it states the ratio before anything else, in the
- * session's own counts, and it says why the ratio is lopsided in the same breath:
- * "Most fail. That's the point." Without that second line a reader's first guess
- * at a page of kills is that something is broken.
+ * session's own counts, and it says in the same breath that the ratio is the bar
+ * working rather than the loop failing.
+ *
+ * WHY THE LOP-SIDED RATIO IS NOT CLAIMED AS A SUCCESS. An earlier draft read
+ * "Most fail. That's the point.", which invites the reading "we kill everything,
+ * therefore the product works" — a claim this project cannot support and does not
+ * make. The line states the mechanism instead: one bar, fixed before testing,
+ * not moved to produce a pass. That is checkable against the committed policy,
+ * and it answers the question a judge actually has, which is whether the gate can
+ * ever say yes. It can: `RealResultCard` shows the one hypothesis that cleared it.
+ *
+ * WHY THE COUNTERS ARE LABELLED "THIS RUN ONLY". They are this process's
+ * counters, they start at zero on every boot, and on a free tier that sleeps when
+ * idle they diverge from the committed record as a matter of routine — the
+ * deployed service once reported `hypotheses_attempted: 0` while 201 entries sat
+ * committed. This strip sits directly above sections that quote the committed
+ * record, so unlabelled it puts two true-but-different numbers on one screen,
+ * which is the exact contradiction `page.tsx` warns about. The scope label is
+ * what makes both numbers honest at once.
  *
  * WHY IT SITS ABOVE THE NAV AND ON EVERY ROUTE. A judge who opens a shared link
  * lands on the log or the leaderboard, not the loop view — and those screens are
  * a table of kills with no statement of how many hypotheses produced them. The
  * ratio has to arrive before the table, on whatever screen the link pointed at.
+ * That is also why the scope note below the counters names no specific screen:
+ * it has to read correctly on all three.
  *
  * WHY THERE IS NO CTA. The earlier brief put a "Watch it happen live" anchor here.
  * It pointed at `#empty-bench` or `#live-hypothesis`, which exist only on the loop
@@ -54,7 +72,7 @@ function Counter({ value, label }: { value: number; label: string }) {
 export function OrientationStrip({ counts }: Props) {
   return (
     <section
-      aria-label="What this product does"
+      aria-label="Counters for the current run"
       className="border-b-2 border-amber bg-ink px-4 py-5 md:px-8"
     >
       <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-4 lg:flex-row lg:items-center lg:justify-between lg:gap-10">
@@ -62,16 +80,32 @@ export function OrientationStrip({ counts }: Props) {
           <p className="text-heading text-paper">
             Factor Prover runs trading hypotheses through a strict scientific test.
           </p>
-          <p className="mt-1 text-heading font-semibold text-paper">Most fail. That’s the point.</p>
+          <p className="mt-1 text-heading font-semibold text-paper">
+            The bar is written before testing starts, and it never moves to produce a pass.
+          </p>
         </div>
 
         <div className="flex flex-col gap-3 lg:items-end">
           {counts ? (
-            <div className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
-              <Counter value={counts.attempted} label="attempted" />
-              <Counter value={counts.passed} label="passed" />
-              <Counter value={counts.killed} label="killed" />
-            </div>
+            <>
+              {/*
+                The scope label, and the reason it is not optional: these are the
+                live process's counters, and the sections below quote the committed
+                record. On a sleeping free tier the two routinely disagree — 0
+                attempted against 201 committed entries was observed on 2026-09-13.
+                Unlabelled, that pair is two true numbers composing a false
+                sentence; labelled, it is the system honestly describing two
+                different things.
+              */}
+              <p className="text-caption uppercase tracking-[0.14em] text-paper/60">
+                This run only
+              </p>
+              <div className="flex flex-wrap items-baseline gap-x-8 gap-y-3">
+                <Counter value={counts.attempted} label="attempted" />
+                <Counter value={counts.passed} label="passed" />
+                <Counter value={counts.killed} label="killed" />
+              </div>
+            </>
           ) : (
             /*
              * The house em-dash rather than zeros while the counters are in
@@ -82,6 +116,16 @@ export function OrientationStrip({ counts }: Props) {
               {ABSENT} attempted · {ABSENT} passed · {ABSENT} killed
             </p>
           )}
+
+          {/*
+            Route-independent on purpose. This strip renders on all three routes
+            (page.tsx renders it on `/`, NavBar on the others), so it cannot point
+            at a panel that only exists on one of them.
+          */}
+          <p className="max-w-[52ch] text-label text-paper/70 lg:text-right">
+            These counters cover this run only and reset when the service restarts. The
+            committed record — every run, kept as a hash chain — is separate, and larger.
+          </p>
         </div>
       </div>
     </section>
